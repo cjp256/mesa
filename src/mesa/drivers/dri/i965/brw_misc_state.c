@@ -646,6 +646,7 @@ brw_emit_depth_stencil_hiz(struct brw_context *brw,
 
       /* Emit hiz buffer. */
       if (hiz) {
+         assert(depth_mt);
          struct intel_mipmap_tree *hiz_mt = depth_mt->hiz_buf->mt;
 	 BEGIN_BATCH(3);
 	 OUT_BATCH((_3DSTATE_HIER_DEPTH_BUFFER << 16) | (3 - 2));
@@ -923,15 +924,6 @@ brw_emit_select_pipeline(struct brw_context *brw, enum brw_pipeline pipeline)
        */
       const unsigned dc_flush =
          brw->gen >= 7 ? PIPE_CONTROL_DATA_CACHE_FLUSH : 0;
-
-      if (brw->gen == 6) {
-         /* Hardware workaround: SNB B-Spec says:
-          *
-          *   Before a PIPE_CONTROL with Write Cache Flush Enable = 1, a
-          *   PIPE_CONTROL with any non-zero post-sync-op is required.
-          */
-         brw_emit_post_sync_nonzero_flush(brw);
-      }
 
       brw_emit_pipe_control_flush(brw,
                                   PIPE_CONTROL_RENDER_TARGET_FLUSH |

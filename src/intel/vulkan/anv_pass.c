@@ -57,12 +57,11 @@ VkResult anv_CreateRenderPass(
    for (uint32_t i = 0; i < pCreateInfo->attachmentCount; i++) {
       struct anv_render_pass_attachment *att = &pass->attachments[i];
 
-      att->format = anv_format_for_vk_format(pCreateInfo->pAttachments[i].format);
+      att->format = pCreateInfo->pAttachments[i].format;
       att->samples = pCreateInfo->pAttachments[i].samples;
       att->load_op = pCreateInfo->pAttachments[i].loadOp;
+      att->store_op = pCreateInfo->pAttachments[i].storeOp;
       att->stencil_load_op = pCreateInfo->pAttachments[i].stencilLoadOp;
-      // att->store_op = pCreateInfo->pAttachments[i].storeOp;
-      // att->stencil_store_op = pCreateInfo->pAttachments[i].stencilStoreOp;
    }
 
    uint32_t subpass_attachment_count = 0, *p;

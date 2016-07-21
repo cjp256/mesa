@@ -35,7 +35,8 @@
 
 enum dd_mode {
    DD_DETECT_HANGS,
-   DD_DUMP_ALL_CALLS
+   DD_DUMP_ALL_CALLS,
+   DD_DUMP_APITRACE_CALL,
 };
 
 struct dd_screen
@@ -47,6 +48,7 @@ struct dd_screen
    bool no_flush;
    bool verbose;
    unsigned skip_count;
+   unsigned apitrace_dump_call;
 };
 
 struct dd_query
@@ -114,6 +116,7 @@ struct dd_context
    float tess_default_levels[6];
 
    unsigned num_draw_calls;
+   unsigned apitrace_call_number;
 };
 
 

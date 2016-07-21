@@ -128,6 +128,7 @@ static void vid_dec_h264_BeginFrame(vid_dec_PrivateType *priv)
 
       priv->codec = priv->pipe->create_video_codec(priv->pipe, &templat);
    }
+   priv->picture.h264.slice_count = 0;
    priv->codec->begin_frame(priv->codec, priv->target, &priv->picture.base);
    priv->frame_started = true;
 }
@@ -247,7 +248,7 @@ static void scaling_list(struct vl_rbsp *rbsp, uint8_t *scalingList, unsigned si
 static struct pipe_h264_sps *seq_parameter_set_id(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp)
 {
    unsigned id = vl_rbsp_ue(rbsp);
-   if (id >= Elements(priv->codec_data.h264.sps))
+   if (id >= ARRAY_SIZE(priv->codec_data.h264.sps))
       return NULL; /* invalid seq_parameter_set_id */
 
    return &priv->codec_data.h264.sps[id];
@@ -395,7 +396,7 @@ static void seq_parameter_set(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp)
 static struct pipe_h264_pps *pic_parameter_set_id(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp)
 {
    unsigned id = vl_rbsp_ue(rbsp);
-   if (id >= Elements(priv->codec_data.h264.pps))
+   if (id >= ARRAY_SIZE(priv->codec_data.h264.pps))
       return NULL; /* invalid pic_parameter_set_id */
 
    return &priv->codec_data.h264.pps[id];
@@ -961,6 +962,7 @@ static void vid_dec_h264_Decode(vid_dec_PrivateType *priv, struct vl_vlc *vlc, u
 
    if (priv->slice) {
       unsigned bytes = priv->bytes_left - (vl_vlc_bits_left(vlc) / 8);
+      ++priv->picture.h264.slice_count;
       priv->codec->decode_bitstream(priv->codec, priv->target, &priv->picture.base,
                                     1, &priv->slice, &bytes);
       priv->slice = NULL;
@@ -1018,6 +1020,7 @@ static void vid_dec_h264_Decode(vid_dec_PrivateType *priv, struct vl_vlc *vlc, u
 
       vid_dec_h264_BeginFrame(priv);
 
+      ++priv->picture.h264.slice_count;
       priv->codec->decode_bitstream(priv->codec, priv->target, &priv->picture.base,
                                     1, &ptr, &bytes);
    }

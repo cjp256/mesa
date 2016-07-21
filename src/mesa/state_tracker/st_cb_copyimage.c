@@ -23,6 +23,7 @@
  */
 
 #include "state_tracker/st_context.h"
+#include "state_tracker/st_cb_bitmap.h"
 #include "state_tracker/st_cb_copyimage.h"
 #include "state_tracker/st_cb_fbo.h"
 #include "state_tracker/st_texture.h"
@@ -161,9 +162,9 @@ get_canonical_format(enum pipe_format format)
             RETURN_FOR_SWIZZLE4(Z, Y, X, W, PIPE_FORMAT_B8G8R8A8_UNORM);
             RETURN_FOR_SWIZZLE4(Z, Y, X, 1, PIPE_FORMAT_B8G8R8A8_UNORM);
             RETURN_FOR_SWIZZLE4(W, Z, Y, X, PIPE_FORMAT_A8B8G8R8_UNORM);
-            RETURN_FOR_SWIZZLE4(1, Z, Y, X, PIPE_FORMAT_A8B8G8R8_UNORM);
-            RETURN_FOR_SWIZZLE4(W, X, Y, Z, PIPE_FORMAT_A8R8G8B8_UNORM);
-            RETURN_FOR_SWIZZLE4(1, X, Y, Z, PIPE_FORMAT_A8R8G8B8_UNORM);
+            RETURN_FOR_SWIZZLE4(W, Z, Y, 1, PIPE_FORMAT_A8B8G8R8_UNORM);
+            RETURN_FOR_SWIZZLE4(Y, Z, W, X, PIPE_FORMAT_A8R8G8B8_UNORM);
+            RETURN_FOR_SWIZZLE4(Y, Z, W, 1, PIPE_FORMAT_A8R8G8B8_UNORM);
             break;
 
          case 16:
@@ -546,6 +547,9 @@ st_CopyImageSubData(struct gl_context *ctx,
    struct pipe_resource *src_res, *dst_res;
    struct pipe_box box;
    int src_level, dst_level;
+
+   st_flush_bitmap_cache(st);
+   st_invalidate_readpix_cache(st);
 
    if (src_image) {
       struct st_texture_image *src = st_texture_image(src_image);

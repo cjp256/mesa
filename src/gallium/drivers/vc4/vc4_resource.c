@@ -294,9 +294,9 @@ vc4_resource_transfer_map(struct pipe_context *pctx,
                 ptrans->box.height = align(ptrans->box.height, utile_h);
 
                 ptrans->stride = ptrans->box.width * rsc->cpp;
-                ptrans->layer_stride = ptrans->stride;
+                ptrans->layer_stride = ptrans->stride * ptrans->box.height;
 
-                trans->map = malloc(ptrans->stride * ptrans->box.height);
+                trans->map = malloc(ptrans->layer_stride * ptrans->box.depth);
                 if (usage & PIPE_TRANSFER_READ ||
                     ptrans->box.width != orig_width ||
                     ptrans->box.height != orig_height) {
@@ -534,8 +534,8 @@ vc4_resource_from_handle(struct pipe_screen *pscreen,
         struct vc4_resource *rsc = vc4_resource_setup(pscreen, tmpl);
         struct pipe_resource *prsc = &rsc->base.b;
         struct vc4_resource_slice *slice = &rsc->slices[0];
-        uint32_t expected_stride = align(prsc->width0 / rsc->cpp,
-                                         vc4_utile_width(rsc->cpp));
+        uint32_t expected_stride =
+            align(prsc->width0, vc4_utile_width(rsc->cpp)) * rsc->cpp;
 
         if (!rsc)
                 return NULL;
@@ -552,7 +552,7 @@ vc4_resource_from_handle(struct pipe_screen *pscreen,
                                 handle->stride,
                                 expected_stride);
                 }
-                return NULL;
+                goto fail;
         }
 
         rsc->tiled = false;
@@ -877,7 +877,9 @@ vc4_update_shadow_baselevel_texture(struct pipe_context *pctx,
         if (shadow->writes == orig->writes && orig->bo->private)
                 return;
 
-        perf_debug("Updating shadow texture due to %s\n",
+        perf_debug("Updating %dx%d@%d shadow texture due to %s\n",
+                   orig->base.b.width0, orig->base.b.height0,
+                   view->u.tex.first_level,
                    view->u.tex.first_level ? "base level" : "raster layout");
 
         for (int i = 0; i <= shadow->base.b.last_level; i++) {

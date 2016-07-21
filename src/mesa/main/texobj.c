@@ -1196,7 +1196,7 @@ invalidate_tex_image_error_check(struct gl_context *ctx, GLuint texture,
  * glCreateTextures should throw errors if target = 0. This is not exposed to
  * the rest of Mesa to encourage Mesa internals to use nameless textures,
  * which do not require expensive hash lookups.
- * \param target  either 0 or a a valid / error-checked texture target enum
+ * \param target  either 0 or a valid / error-checked texture target enum
  */
 static void
 create_textures(struct gl_context *ctx, GLenum target,
@@ -1219,7 +1219,7 @@ create_textures(struct gl_context *ctx, GLenum target,
    /*
     * This must be atomic (generation and allocation of texture IDs)
     */
-   mtx_lock(&ctx->Shared->Mutex);
+   _mesa_HashLockMutex(ctx->Shared->TexObjects);
 
    first = _mesa_HashFindFreeKeyBlock(ctx->Shared->TexObjects, n);
 
@@ -1229,18 +1229,18 @@ create_textures(struct gl_context *ctx, GLenum target,
       GLuint name = first + i;
       texObj = ctx->Driver.NewTextureObject(ctx, name, target);
       if (!texObj) {
-         mtx_unlock(&ctx->Shared->Mutex);
+         _mesa_HashUnlockMutex(ctx->Shared->TexObjects);
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "gl%sTextures", caller);
          return;
       }
 
       /* insert into hash table */
-      _mesa_HashInsert(ctx->Shared->TexObjects, texObj->Name, texObj);
+      _mesa_HashInsertLocked(ctx->Shared->TexObjects, texObj->Name, texObj);
 
       textures[i] = name;
    }
 
-   mtx_unlock(&ctx->Shared->Mutex);
+   _mesa_HashUnlockMutex(ctx->Shared->TexObjects);
 }
 
 /*@}*/
@@ -1489,9 +1489,7 @@ _mesa_DeleteTextures( GLsizei n, const GLuint *textures)
             /* The texture _name_ is now free for re-use.
              * Remove it from the hash table now.
              */
-            mtx_lock(&ctx->Shared->Mutex);
             _mesa_HashRemove(ctx->Shared->TexObjects, delObj->Name);
-            mtx_unlock(&ctx->Shared->Mutex);
 
             /* Unreference the texobj.  If refcount hits zero, the texture
              * will be deleted.
@@ -1723,9 +1721,7 @@ _mesa_BindTexture( GLenum target, GLuint texName )
          }
 
          /* and insert it into hash table */
-         mtx_lock(&ctx->Shared->Mutex);
          _mesa_HashInsert(ctx->Shared->TexObjects, texName, newTexObj);
-         mtx_unlock(&ctx->Shared->Mutex);
       }
    }
 

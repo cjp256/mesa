@@ -93,7 +93,7 @@ fd4_emit_const(struct fd_ringbuffer *ring, enum shader_t type,
 
 static void
 fd4_emit_const_bo(struct fd_ringbuffer *ring, enum shader_t type, boolean write,
-		uint32_t regid, uint32_t num, struct fd_bo **bos, uint32_t *offsets)
+		uint32_t regid, uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
 	uint32_t i;
 
@@ -109,11 +109,11 @@ fd4_emit_const_bo(struct fd_ringbuffer *ring, enum shader_t type, boolean write,
 			CP_LOAD_STATE_1_STATE_TYPE(ST_CONSTANTS));
 
 	for (i = 0; i < num; i++) {
-		if (bos[i]) {
+		if (prscs[i]) {
 			if (write) {
-				OUT_RELOCW(ring, bos[i], offsets[i], 0, 0);
+				OUT_RELOCW(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
 			} else {
-				OUT_RELOC(ring, bos[i], offsets[i], 0, 0);
+				OUT_RELOC(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
 			}
 		} else {
 			OUT_RING(ring, 0xbad00000 | (i << 16));
@@ -131,16 +131,8 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
 			[SB_FRAG_TEX] = REG_A4XX_TPL1_TP_FS_BORDER_COLOR_BASE_ADDR,
 	};
 	struct fd4_context *fd4_ctx = fd4_context(ctx);
-	unsigned i, off;
-	void *ptr;
-
-	u_upload_alloc(fd4_ctx->border_color_uploader,
-			0, BORDER_COLOR_UPLOAD_SIZE,
-		       BORDER_COLOR_UPLOAD_SIZE, &off,
-			&fd4_ctx->border_color_buf,
-			&ptr);
-
-	fd_setup_border_colors(tex, ptr, 0);
+	bool needs_border = false;
+	unsigned i;
 
 	if (tex->num_samplers > 0) {
 		int num_samplers;
@@ -166,6 +158,8 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
 					&dummy_sampler;
 			OUT_RING(ring, sampler->texsamp0);
 			OUT_RING(ring, sampler->texsamp1);
+
+			needs_border |= sampler->needs_border;
 		}
 
 		for (; i < num_samplers; i++) {
@@ -235,10 +229,22 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		debug_assert(v->astc_srgb.count == 0);
 	}
 
-	OUT_PKT0(ring, bcolor_reg[sb], 1);
-	OUT_RELOC(ring, fd_resource(fd4_ctx->border_color_buf)->bo, off, 0, 0);
+	if (needs_border) {
+		unsigned off;
+		void *ptr;
 
-	u_upload_unmap(fd4_ctx->border_color_uploader);
+		u_upload_alloc(fd4_ctx->border_color_uploader,
+				0, BORDER_COLOR_UPLOAD_SIZE,
+				BORDER_COLOR_UPLOAD_SIZE, &off,
+				&fd4_ctx->border_color_buf,
+				&ptr);
+
+		fd_setup_border_colors(tex, ptr, 0);
+		OUT_PKT0(ring, bcolor_reg[sb], 1);
+		OUT_RELOC(ring, fd_resource(fd4_ctx->border_color_buf)->bo, off, 0, 0);
+
+		u_upload_unmap(fd4_ctx->border_color_uploader);
+	}
 }
 
 /* emit texture state for mem->gmem restore operation.. eventually it would

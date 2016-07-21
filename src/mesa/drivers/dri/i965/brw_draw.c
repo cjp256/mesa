@@ -38,6 +38,7 @@
 #include "swrast/swrast.h"
 #include "swrast_setup/swrast_setup.h"
 #include "drivers/common/meta.h"
+#include "util/bitscan.h"
 
 #include "brw_blorp.h"
 #include "brw_draw.h"
@@ -301,15 +302,14 @@ brw_merge_inputs(struct brw_context *brw,
    }
 
    if (brw->gen < 8 && !brw->is_haswell) {
-      struct gl_program *vp = &ctx->VertexProgram._Current->Base;
+      GLbitfield64 mask = ctx->VertexProgram._Current->Base.InputsRead;
       /* Prior to Haswell, the hardware can't natively support GL_FIXED or
        * 2_10_10_10_REV vertex formats.  Set appropriate workaround flags.
        */
-      for (i = 0; i < VERT_ATTRIB_MAX; i++) {
-         if (!(vp->InputsRead & BITFIELD64_BIT(i)))
-            continue;
-
+      while (mask) {
          uint8_t wa_flags = 0;
+
+         i = u_bit_scan64(&mask);
 
          switch (brw->vb.inputs[i].glarray->Type) {
 
@@ -424,6 +424,7 @@ brw_try_draw_prims(struct gl_context *ctx,
                    const struct _mesa_prim *prims,
                    GLuint nr_prims,
                    const struct _mesa_index_buffer *ib,
+                   bool index_bounds_valid,
                    GLuint min_index,
                    GLuint max_index,
                    struct brw_transform_feedback_object *xfb_obj,
@@ -477,6 +478,7 @@ brw_try_draw_prims(struct gl_context *ctx,
    brw->ib.ib = ib;
    brw->ctx.NewDriverState |= BRW_NEW_INDICES;
 
+   brw->vb.index_bounds_valid = index_bounds_valid;
    brw->vb.min_index = min_index;
    brw->vb.max_index = max_index;
    brw->ctx.NewDriverState |= BRW_NEW_VERTICES;
@@ -500,9 +502,11 @@ brw_try_draw_prims(struct gl_context *ctx,
       intel_batchbuffer_save_state(brw);
 
       if (brw->num_instances != prims[i].num_instances ||
-          brw->basevertex != prims[i].basevertex) {
+          brw->basevertex != prims[i].basevertex ||
+          brw->baseinstance != prims[i].base_instance) {
          brw->num_instances = prims[i].num_instances;
          brw->basevertex = prims[i].basevertex;
+         brw->baseinstance = prims[i].base_instance;
          if (i > 0) { /* For i == 0 we just did this before the loop */
             brw->ctx.NewDriverState |= BRW_NEW_VERTICES;
             brw_merge_inputs(brw, arrays);
@@ -659,14 +663,15 @@ brw_draw_prims(struct gl_context *ctx,
       perf_debug("Scanning index buffer to compute index buffer bounds.  "
                  "Use glDrawRangeElements() to avoid this.\n");
       vbo_get_minmax_indices(ctx, prims, ib, &min_index, &max_index, nr_prims);
+      index_bounds_valid = true;
    }
 
    /* Try drawing with the hardware, but don't do anything else if we can't
     * manage it.  swrast doesn't support our featureset, so we can't fall back
     * to it.
     */
-   brw_try_draw_prims(ctx, arrays, prims, nr_prims, ib, min_index, max_index,
-                      xfb_obj, stream, indirect);
+   brw_try_draw_prims(ctx, arrays, prims, nr_prims, ib, index_bounds_valid,
+                      min_index, max_index, xfb_obj, stream, indirect);
 }
 
 void

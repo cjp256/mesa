@@ -43,6 +43,7 @@ enum call_type
    CALL_CLEAR_BUFFER,
    CALL_CLEAR_RENDER_TARGET,
    CALL_CLEAR_DEPTH_STENCIL,
+   CALL_GENERATE_MIPMAP,
 };
 
 struct call_resource_copy_region
@@ -72,6 +73,15 @@ struct call_clear_buffer
    int clear_value_size;
 };
 
+struct call_generate_mipmap {
+   struct pipe_resource *res;
+   enum pipe_format format;
+   unsigned base_level;
+   unsigned last_level;
+   unsigned first_layer;
+   unsigned last_layer;
+};
+
 struct dd_call
 {
    enum call_type type;
@@ -84,6 +94,7 @@ struct dd_call
       struct pipe_resource *flush_resource;
       struct call_clear clear;
       struct call_clear_buffer clear_buffer;
+      struct call_generate_mipmap generate_mipmap;
    } info;
 };
 
@@ -99,6 +110,10 @@ dd_get_file_stream(struct dd_context *dctx)
    fprintf(f, "Driver vendor: %s\n", screen->get_vendor(screen));
    fprintf(f, "Device vendor: %s\n", screen->get_device_vendor(screen));
    fprintf(f, "Device name: %s\n\n", screen->get_name(screen));
+
+   if (dctx->apitrace_call_number)
+      fprintf(f, "Last apitrace call: %u\n\n",
+              dctx->apitrace_call_number);
    return f;
 }
 
@@ -421,6 +436,13 @@ dd_dump_blit(struct dd_context *dctx, struct pipe_blit_info *info, FILE *f)
 }
 
 static void
+dd_dump_generate_mipmap(struct dd_context *dctx, FILE *f)
+{
+   fprintf(f, "%s:\n", __func__+8);
+   /* TODO */
+}
+
+static void
 dd_dump_flush_resource(struct dd_context *dctx, struct pipe_resource *res,
                        FILE *f)
 {
@@ -517,6 +539,10 @@ dd_dump_call(struct dd_context *dctx, struct dd_call *call, unsigned flags)
       break;
    case CALL_CLEAR_DEPTH_STENCIL:
       dd_dump_clear_depth_stencil(dctx, f);
+      break;
+   case CALL_GENERATE_MIPMAP:
+      dd_dump_generate_mipmap(dctx, f);
+      break;
    }
 
    dd_dump_driver_state(dctx, f, flags);
@@ -591,6 +617,7 @@ dd_context_flush(struct pipe_context *_pipe,
                                "GPU hang detected in pipe->flush()");
       break;
    case DD_DUMP_ALL_CALLS:
+   case DD_DUMP_APITRACE_CALL:
       pipe->flush(pipe, fence, flags);
       break;
    default:
@@ -632,6 +659,13 @@ dd_after_draw(struct dd_context *dctx, struct dd_call *call)
          if (!dscreen->no_flush)
             pipe->flush(pipe, NULL, 0);
          dd_dump_call(dctx, call, 0);
+         break;
+      case DD_DUMP_APITRACE_CALL:
+         if (dscreen->apitrace_dump_call == dctx->apitrace_call_number) {
+            dd_dump_call(dctx, call, 0);
+            /* No need to continue. */
+            exit(0);
+         }
          break;
       default:
          assert(0);
@@ -717,6 +751,35 @@ dd_context_blit(struct pipe_context *_pipe, const struct pipe_blit_info *info)
    dd_before_draw(dctx);
    pipe->blit(pipe, info);
    dd_after_draw(dctx, &call);
+}
+
+static boolean
+dd_context_generate_mipmap(struct pipe_context *_pipe,
+                           struct pipe_resource *res,
+                           enum pipe_format format,
+                           unsigned base_level,
+                           unsigned last_level,
+                           unsigned first_layer,
+                           unsigned last_layer)
+{
+   struct dd_context *dctx = dd_context(_pipe);
+   struct pipe_context *pipe = dctx->pipe;
+   struct dd_call call;
+   boolean result;
+
+   call.type = CALL_GENERATE_MIPMAP;
+   call.info.generate_mipmap.res = res;
+   call.info.generate_mipmap.format = format;
+   call.info.generate_mipmap.base_level = base_level;
+   call.info.generate_mipmap.last_level = last_level;
+   call.info.generate_mipmap.first_layer = first_layer;
+   call.info.generate_mipmap.last_layer = last_layer;
+
+   dd_before_draw(dctx);
+   result = pipe->generate_mipmap(pipe, res, format, base_level, last_level,
+                                  first_layer, last_layer);
+   dd_after_draw(dctx, &call);
+   return result;
 }
 
 static void
@@ -825,5 +888,5 @@ dd_init_draw_functions(struct dd_context *dctx)
    CTX_INIT(clear_depth_stencil);
    CTX_INIT(clear_buffer);
    CTX_INIT(flush_resource);
-   /* launch_grid */
+   CTX_INIT(generate_mipmap);
 }

@@ -90,17 +90,24 @@ nvc0_memory_barrier(struct pipe_context *pipe, unsigned flags)
                nvc0->cb_dirty = true;
          }
       }
+   } else {
+      /* Pretty much any writing by shaders needs a serialize after
+       * it. Especially when moving between 3d and compute pipelines, but even
+       * without that.
+       */
+      IMMED_NVC0(push, NVC0_3D(SERIALIZE), 0);
    }
 
-   if (flags & (PIPE_BARRIER_SHADER_BUFFER   |
-                PIPE_BARRIER_CONSTANT_BUFFER |
-                PIPE_BARRIER_INDEX_BUFFER    |
-                PIPE_BARRIER_IMAGE           |
-                PIPE_BARRIER_TEXTURE         |
-                PIPE_BARRIER_VERTEX_BUFFER   |
-                PIPE_BARRIER_STREAMOUT_BUFFER)) {
-      IMMED_NVC0(push, NVC0_3D(MEM_BARRIER), 0x1011);
-   }
+   /* If we're going to texture from a buffer/image written by a shader, we
+    * must flush the texture cache.
+    */
+   if (flags & PIPE_BARRIER_TEXTURE)
+      IMMED_NVC0(push, NVC0_3D(TEX_CACHE_CTL), 0);
+
+   if (flags & PIPE_BARRIER_CONSTANT_BUFFER)
+      nvc0->cb_dirty = true;
+   if (flags & (PIPE_BARRIER_VERTEX_BUFFER | PIPE_BARRIER_INDEX_BUFFER))
+      nvc0->base.vbo_dirty = true;
 }
 
 static void
@@ -154,8 +161,11 @@ nvc0_context_unreference_resources(struct nvc0_context *nvc0)
       for (i = 0; i < NVC0_MAX_BUFFERS; ++i)
          pipe_resource_reference(&nvc0->buffers[s][i].buffer, NULL);
 
-      for (i = 0; i < NVC0_MAX_IMAGES; ++i)
+      for (i = 0; i < NVC0_MAX_IMAGES; ++i) {
          pipe_resource_reference(&nvc0->images[s][i].resource, NULL);
+         if (nvc0->screen->base.class_3d >= GM107_3D_CLASS)
+            pipe_sampler_view_reference(&nvc0->images_tic[s][i], NULL);
+      }
    }
 
    for (s = 0; s < 2; ++s) {

@@ -36,7 +36,8 @@ fs_reg *
 fs_visitor::emit_vs_system_value(int location)
 {
    fs_reg *reg = new(this->mem_ctx)
-      fs_reg(ATTR, 4 * _mesa_bitcount_64(nir->info.inputs_read),
+      fs_reg(ATTR, 4 * (_mesa_bitcount_64(nir->info.inputs_read) +
+                        _mesa_bitcount_64(nir->info.double_inputs_read)),
              BRW_REGISTER_TYPE_D);
    brw_vs_prog_data *vs_prog_data = (brw_vs_prog_data *) prog_data;
 
@@ -212,9 +213,9 @@ fs_visitor::emit_interpolation_setup_gen4()
 
    abld = bld.annotate("compute pixel deltas from v0");
 
-   this->delta_xy[BRW_WM_PERSPECTIVE_PIXEL_BARYCENTRIC] =
+   this->delta_xy[BRW_BARYCENTRIC_PERSPECTIVE_PIXEL] =
       vgrf(glsl_type::vec2_type);
-   const fs_reg &delta_xy = this->delta_xy[BRW_WM_PERSPECTIVE_PIXEL_BARYCENTRIC];
+   const fs_reg &delta_xy = this->delta_xy[BRW_BARYCENTRIC_PERSPECTIVE_PIXEL];
    const fs_reg xstart(negate(brw_vec1_grf(1, 0)));
    const fs_reg ystart(negate(brw_vec1_grf(1, 1)));
 
@@ -307,7 +308,7 @@ fs_visitor::emit_interpolation_setup_gen6()
    this->wpos_w = vgrf(glsl_type::float_type);
    abld.emit(SHADER_OPCODE_RCP, this->wpos_w, this->pixel_w);
 
-   for (int i = 0; i < BRW_WM_BARYCENTRIC_INTERP_MODE_COUNT; ++i) {
+   for (int i = 0; i < BRW_BARYCENTRIC_MODE_COUNT; ++i) {
       uint8_t reg = payload.barycentric_coord_reg[i];
       this->delta_xy[i] = fs_reg(brw_vec16_grf(reg, 0));
    }
@@ -393,7 +394,8 @@ fs_visitor::emit_single_fb_write(const fs_builder &bld,
 
    const fs_reg sources[] = {
       color0, color1, src0_alpha, src_depth, dst_depth, src_stencil,
-      sample_mask, brw_imm_ud(components)
+      (prog_data->uses_omask ? sample_mask : fs_reg()),
+      brw_imm_ud(components)
    };
    assert(ARRAY_SIZE(sources) - 1 == FB_WRITE_LOGICAL_SRC_COMPONENTS);
    fs_inst *write = bld.emit(FS_OPCODE_FB_WRITE_LOGICAL, fs_reg(),
@@ -423,17 +425,16 @@ fs_visitor::emit_fb_writes()
        * sounds because the SIMD8 single-source message lacks channel selects
        * for the second and third subspans.
        */
-      no16("Missing support for simd16 depth writes on gen6\n");
+      limit_dispatch_width(8, "Depth writes unsupported in SIMD16+ mode.\n");
    }
 
    if (nir->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_STENCIL)) {
       /* From the 'Render Target Write message' section of the docs:
        * "Output Stencil is not supported with SIMD16 Render Target Write
        * Messages."
-       *
-       * FINISHME: split 16 into 2 8s
        */
-      no16("FINISHME: support 2 simd8 writes for gl_FragStencilRefARB\n");
+      limit_dispatch_width(8, "gl_FragStencilRefARB unsupported "
+                           "in SIMD16+ mode.\n");
    }
 
    if (do_dual_src) {
@@ -458,8 +459,7 @@ fs_visitor::emit_fb_writes()
             src0_alpha = offset(outputs[0], bld, 3);
 
          inst = emit_single_fb_write(abld, this->outputs[target], reg_undef,
-                                     src0_alpha,
-                                     this->output_components[target]);
+                                     src0_alpha, 4);
          inst->target = target;
       }
    }
@@ -544,9 +544,7 @@ void fs_visitor::compute_clip_distance(gl_clip_plane *clip_planes)
    const fs_builder abld = bld.annotate("user clip distances");
 
    this->outputs[VARYING_SLOT_CLIP_DIST0] = vgrf(glsl_type::vec4_type);
-   this->output_components[VARYING_SLOT_CLIP_DIST0] = 4;
    this->outputs[VARYING_SLOT_CLIP_DIST1] = vgrf(glsl_type::vec4_type);
-   this->output_components[VARYING_SLOT_CLIP_DIST1] = 4;
 
    for (int i = 0; i < key->nr_userclip_plane_consts; i++) {
       fs_reg u = userplane[i];
@@ -593,6 +591,13 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
     *    "The write data payload can be between 1 and 8 message phases long."
     */
    if (vue_map->slots_valid == 0) {
+      /* For GS, just turn EmitVertex() into a no-op.  We don't want it to
+       * end the thread, and emit_gs_thread_end() already emits a SEND with
+       * EOT at the end of the program for us.
+       */
+      if (stage == MESA_SHADER_GEOMETRY)
+         return;
+
       fs_reg payload = fs_reg(VGRF, alloc.allocate(2), BRW_REGISTER_TYPE_UD);
       bld.exec_all().MOV(payload, urb_handle);
 
@@ -716,10 +721,8 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
                sources[length++] = reg;
             }
          } else {
-            for (unsigned i = 0; i < output_components[varying]; i++)
+            for (unsigned i = 0; i < 4; i++)
                sources[length++] = offset(this->outputs[varying], bld, i);
-            for (unsigned i = output_components[varying]; i < 4; i++)
-               sources[length++] = brw_imm_d(0);
          }
          break;
       }
@@ -884,17 +887,15 @@ fs_visitor::init()
       min_dispatch_width = 8;
    }
 
+   this->max_dispatch_width = 32;
    this->prog_data = this->stage_prog_data;
 
    this->failed = false;
-   this->simd16_unsupported = false;
-   this->no16_msg = NULL;
 
    this->nir_locals = NULL;
    this->nir_ssa_values = NULL;
 
    memset(&this->payload, 0, sizeof(this->payload));
-   memset(this->output_components, 0, sizeof(this->output_components));
    this->source_depth_to_render_target = false;
    this->runtime_check_aads_emit = false;
    this->first_non_payload_grf = 0;

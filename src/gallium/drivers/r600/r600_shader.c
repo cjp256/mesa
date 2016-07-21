@@ -288,7 +288,7 @@ error:
 
 void r600_pipe_shader_destroy(struct pipe_context *ctx, struct r600_pipe_shader *shader)
 {
-	pipe_resource_reference((struct pipe_resource**)&shader->bo, NULL);
+	r600_resource_reference(&shader->bo, NULL);
 	r600_bytecode_clear(&shader->shader.bc);
 	r600_release_command_buffer(&shader->command_buffer);
 }
@@ -858,7 +858,7 @@ static int tgsi_declaration(struct r600_shader_ctx *ctx)
 	case TGSI_FILE_INPUT:
 		for (j = 0; j < count; j++) {
 			i = ctx->shader->ninput + j;
-			assert(i < Elements(ctx->shader->input));
+			assert(i < ARRAY_SIZE(ctx->shader->input));
 			ctx->shader->input[i].name = d->Semantic.Name;
 			ctx->shader->input[i].sid = d->Semantic.Index + j;
 			ctx->shader->input[i].interpolate = d->Interp.Interpolate;
@@ -902,7 +902,7 @@ static int tgsi_declaration(struct r600_shader_ctx *ctx)
 	case TGSI_FILE_OUTPUT:
 		for (j = 0; j < count; j++) {
 			i = ctx->shader->noutput + j;
-			assert(i < Elements(ctx->shader->output));
+			assert(i < ARRAY_SIZE(ctx->shader->output));
 			ctx->shader->output[i].name = d->Semantic.Name;
 			ctx->shader->output[i].sid = d->Semantic.Index + j;
 			ctx->shader->output[i].gpr = ctx->file_offset[TGSI_FILE_OUTPUT] + d->Range.First + j;
@@ -1117,7 +1117,7 @@ static int allocate_system_value_inputs(struct r600_shader_ctx *ctx, int gpr_off
 		} else if (parse.FullToken.Token.Type == TGSI_TOKEN_TYPE_DECLARATION) {
 			struct tgsi_full_declaration *d = &parse.FullToken.FullDeclaration;
 			if (d->Declaration.File == TGSI_FILE_SYSTEM_VALUE) {
-				for (k = 0; k < Elements(inputs); k++) {
+				for (k = 0; k < ARRAY_SIZE(inputs); k++) {
 					if (d->Semantic.Name == inputs[k].name ||
 						d->Semantic.Name == inputs[k].alternate_name) {
 						inputs[k].enabled = true;
@@ -1129,7 +1129,7 @@ static int allocate_system_value_inputs(struct r600_shader_ctx *ctx, int gpr_off
 
 	tgsi_parse_free(&parse);
 
-	for (i = 0; i < Elements(inputs); i++) {
+	for (i = 0; i < ARRAY_SIZE(inputs); i++) {
 		boolean enabled = inputs[i].enabled;
 		int *reg = inputs[i].reg;
 		unsigned name = inputs[i].name;
@@ -1217,7 +1217,7 @@ static int evergreen_gpr_count(struct r600_shader_ctx *ctx)
 
 	/* assign gpr to each interpolator according to priority */
 	num_baryc = 0;
-	for (i = 0; i < Elements(ctx->eg_interpolators); i++) {
+	for (i = 0; i < ARRAY_SIZE(ctx->eg_interpolators); i++) {
 		if (ctx->eg_interpolators[i].enabled) {
 			ctx->eg_interpolators[i].ij_index = num_baryc;
 			num_baryc ++;
@@ -9116,7 +9116,7 @@ static const struct r600_shader_tgsi_instruction eg_shader_tgsi_instruction[] = 
 	[TGSI_OPCODE_MAD]	= { ALU_OP3_MULADD, tgsi_op3},
 	[TGSI_OPCODE_SUB]	= { ALU_OP2_ADD, tgsi_op2},
 	[TGSI_OPCODE_LRP]	= { ALU_OP0_NOP, tgsi_lrp},
-	[TGSI_OPCODE_FMA]	= { ALU_OP0_NOP, tgsi_unsupported},
+	[TGSI_OPCODE_FMA]	= { ALU_OP3_FMA, tgsi_op3},
 	[TGSI_OPCODE_SQRT]	= { ALU_OP1_SQRT_IEEE, tgsi_trans_srcx_replicate},
 	[TGSI_OPCODE_DP2A]	= { ALU_OP0_NOP, tgsi_unsupported},
 	[22]			= { ALU_OP0_NOP, tgsi_unsupported},
@@ -9307,6 +9307,7 @@ static const struct r600_shader_tgsi_instruction eg_shader_tgsi_instruction[] = 
 	[TGSI_OPCODE_DRCP]	= { ALU_OP2_RECIP_64, cayman_emit_double_instr},
 	[TGSI_OPCODE_DSQRT]	= { ALU_OP2_SQRT_64, cayman_emit_double_instr},
 	[TGSI_OPCODE_DMAD]	= { ALU_OP3_FMA_64, tgsi_op3_64},
+	[TGSI_OPCODE_DFMA]	= { ALU_OP3_FMA_64, tgsi_op3_64},
 	[TGSI_OPCODE_DFRAC]	= { ALU_OP1_FRACT_64, tgsi_op2_64},
 	[TGSI_OPCODE_DLDEXP]	= { ALU_OP2_LDEXP_64, tgsi_op2_64},
 	[TGSI_OPCODE_DFRACEXP]	= { ALU_OP1_FREXP_64, tgsi_dfracexp},
@@ -9338,7 +9339,7 @@ static const struct r600_shader_tgsi_instruction cm_shader_tgsi_instruction[] = 
 	[TGSI_OPCODE_MAD]	= { ALU_OP3_MULADD, tgsi_op3},
 	[TGSI_OPCODE_SUB]	= { ALU_OP2_ADD, tgsi_op2},
 	[TGSI_OPCODE_LRP]	= { ALU_OP0_NOP, tgsi_lrp},
-	[TGSI_OPCODE_FMA]	= { ALU_OP0_NOP, tgsi_unsupported},
+	[TGSI_OPCODE_FMA]	= { ALU_OP3_FMA, tgsi_op3},
 	[TGSI_OPCODE_SQRT]	= { ALU_OP1_SQRT_IEEE, cayman_emit_float_instr},
 	[TGSI_OPCODE_DP2A]	= { ALU_OP0_NOP, tgsi_unsupported},
 	[22]			= { ALU_OP0_NOP, tgsi_unsupported},
@@ -9529,6 +9530,7 @@ static const struct r600_shader_tgsi_instruction cm_shader_tgsi_instruction[] = 
 	[TGSI_OPCODE_DRCP]	= { ALU_OP2_RECIP_64, cayman_emit_double_instr},
 	[TGSI_OPCODE_DSQRT]	= { ALU_OP2_SQRT_64, cayman_emit_double_instr},
 	[TGSI_OPCODE_DMAD]	= { ALU_OP3_FMA_64, tgsi_op3_64},
+	[TGSI_OPCODE_DFMA]	= { ALU_OP3_FMA_64, tgsi_op3_64},
 	[TGSI_OPCODE_DFRAC]	= { ALU_OP1_FRACT_64, tgsi_op2_64},
 	[TGSI_OPCODE_DLDEXP]	= { ALU_OP2_LDEXP_64, tgsi_op2_64},
 	[TGSI_OPCODE_DFRACEXP]	= { ALU_OP1_FREXP_64, tgsi_dfracexp},

@@ -199,7 +199,7 @@ nvc0_validate_fb(struct nvc0_context *nvc0)
 
     ms = 1 << ms_mode;
     BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
-    PUSH_DATA (push, 2048);
+    PUSH_DATA (push, NVC0_CB_AUX_SIZE);
     PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(4));
     PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(4));
     BEGIN_1IC0(push, NVC0_3D(CB_POS), 1 + 2 * ms);
@@ -326,6 +326,30 @@ nvc0_validate_viewport(struct nvc0_context *nvc0)
    nvc0->viewports_dirty = 0;
 }
 
+static void
+nvc0_validate_window_rects(struct nvc0_context *nvc0)
+{
+   struct nouveau_pushbuf *push = nvc0->base.pushbuf;
+   bool enable = nvc0->window_rect.rects > 0 || nvc0->window_rect.inclusive;
+   int i;
+
+   IMMED_NVC0(push, NVC0_3D(CLIP_RECTS_EN), enable);
+   if (!enable)
+      return;
+
+   IMMED_NVC0(push, NVC0_3D(CLIP_RECTS_MODE), !nvc0->window_rect.inclusive);
+   BEGIN_NVC0(push, NVC0_3D(CLIP_RECT_HORIZ(0)), NVC0_MAX_WINDOW_RECTANGLES * 2);
+   for (i = 0; i < nvc0->window_rect.rects; i++) {
+      struct pipe_scissor_state *s = &nvc0->window_rect.rect[i];
+      PUSH_DATA(push, (s->maxx << 16) | s->minx);
+      PUSH_DATA(push, (s->maxy << 16) | s->miny);
+   }
+   for (; i < NVC0_MAX_WINDOW_RECTANGLES; i++) {
+      PUSH_DATA(push, 0);
+      PUSH_DATA(push, 0);
+   }
+}
+
 static inline void
 nvc0_upload_uclip_planes(struct nvc0_context *nvc0, unsigned s)
 {
@@ -333,7 +357,7 @@ nvc0_upload_uclip_planes(struct nvc0_context *nvc0, unsigned s)
    struct nvc0_screen *screen = nvc0->screen;
 
    BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
-   PUSH_DATA (push, 2048);
+   PUSH_DATA (push, NVC0_CB_AUX_SIZE);
    PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
    PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
    BEGIN_1IC0(push, NVC0_3D(CB_POS), PIPE_MAX_CLIP_PLANES * 4 + 1);
@@ -486,10 +510,12 @@ nvc0_constbufs_validate(struct nvc0_context *nvc0)
       }
    }
 
-   /* Invalidate all COMPUTE constbufs because they are aliased with 3D. */
-   nvc0->dirty_cp |= NVC0_NEW_CP_CONSTBUF;
-   nvc0->constbuf_dirty[5] |= nvc0->constbuf_valid[5];
-   nvc0->state.uniform_buffer_bound[5] = 0;
+   if (nvc0->screen->base.class_3d < NVE4_3D_CLASS) {
+      /* Invalidate all COMPUTE constbufs because they are aliased with 3D. */
+      nvc0->dirty_cp |= NVC0_NEW_CP_CONSTBUF;
+      nvc0->constbuf_dirty[5] |= nvc0->constbuf_valid[5];
+      nvc0->state.uniform_buffer_bound[5] = 0;
+   }
 }
 
 static void
@@ -501,7 +527,7 @@ nvc0_validate_buffers(struct nvc0_context *nvc0)
 
    for (s = 0; s < 5; s++) {
       BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
-      PUSH_DATA (push, 2048);
+      PUSH_DATA (push, NVC0_CB_AUX_SIZE);
       PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
       PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
       BEGIN_1IC0(push, NVC0_3D(CB_POS), 1 + 4 * NVC0_MAX_BUFFERS);
@@ -515,6 +541,9 @@ nvc0_validate_buffers(struct nvc0_context *nvc0)
             PUSH_DATA (push, nvc0->buffers[s][i].buffer_size);
             PUSH_DATA (push, 0);
             BCTX_REFN(nvc0->bufctx_3d, 3D_BUF, res, RDWR);
+            util_range_add(&res->valid_buffer_range,
+                           nvc0->buffers[s][i].buffer_offset,
+                           nvc0->buffers[s][i].buffer_size);
          } else {
             PUSH_DATA (push, 0);
             PUSH_DATA (push, 0);
@@ -574,7 +603,7 @@ nvc0_validate_driverconst(struct nvc0_context *nvc0)
 
    for (i = 0; i < 5; ++i) {
       BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
-      PUSH_DATA (push, 2048);
+      PUSH_DATA (push, NVC0_CB_AUX_SIZE);
       PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(i));
       PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(i));
       BEGIN_NVC0(push, NVC0_3D(CB_BIND(i)), 1);
@@ -585,7 +614,7 @@ nvc0_validate_driverconst(struct nvc0_context *nvc0)
 }
 
 static void
-nvc0_validate_derived_1(struct nvc0_context *nvc0)
+nvc0_validate_fp_zsa_rast(struct nvc0_context *nvc0)
 {
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    bool rasterizer_discard;
@@ -610,7 +639,7 @@ nvc0_validate_derived_1(struct nvc0_context *nvc0)
  * nvc0_validate_fb, otherwise that will override the RT count setting.
  */
 static void
-nvc0_validate_derived_2(struct nvc0_context *nvc0)
+nvc0_validate_zsa_fb(struct nvc0_context *nvc0)
 {
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
 
@@ -624,7 +653,7 @@ nvc0_validate_derived_2(struct nvc0_context *nvc0)
 }
 
 static void
-nvc0_validate_derived_3(struct nvc0_context *nvc0)
+nvc0_validate_blend_fb(struct nvc0_context *nvc0)
 {
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    struct pipe_framebuffer_state *fb = &nvc0->framebuffer;
@@ -641,6 +670,26 @@ nvc0_validate_derived_3(struct nvc0_context *nvc0)
    BEGIN_NVC0(push, NVC0_3D(MULTISAMPLE_CTRL), 1);
    PUSH_DATA (push, ms);
 }
+
+static void
+nvc0_validate_rast_fb(struct nvc0_context *nvc0)
+{
+   struct nouveau_pushbuf *push = nvc0->base.pushbuf;
+   struct pipe_framebuffer_state *fb = &nvc0->framebuffer;
+   struct pipe_rasterizer_state *rast = &nvc0->rast->pipe;
+
+   if (!rast)
+      return;
+
+   if (rast->offset_units_unscaled) {
+      BEGIN_NVC0(push, NVC0_3D(POLYGON_OFFSET_UNITS), 1);
+      if (fb->zsbuf && fb->zsbuf->format == PIPE_FORMAT_Z16_UNORM)
+         PUSH_DATAf(push, rast->offset_units * (1 << 16));
+      else
+         PUSH_DATAf(push, rast->offset_units * (1 << 24));
+   }
+}
+
 
 static void
 nvc0_validate_tess_state(struct nvc0_context *nvc0)
@@ -711,6 +760,7 @@ validate_list_3d[] = {
     { nvc0_validate_stipple,       NVC0_NEW_3D_STIPPLE },
     { nvc0_validate_scissor,       NVC0_NEW_3D_SCISSOR | NVC0_NEW_3D_RASTERIZER },
     { nvc0_validate_viewport,      NVC0_NEW_3D_VIEWPORT },
+    { nvc0_validate_window_rects,  NVC0_NEW_3D_WINDOW_RECTS },
     { nvc0_vertprog_validate,      NVC0_NEW_3D_VERTPROG },
     { nvc0_tctlprog_validate,      NVC0_NEW_3D_TCTLPROG },
     { nvc0_tevlprog_validate,      NVC0_NEW_3D_TEVLPROG },
@@ -720,10 +770,11 @@ validate_list_3d[] = {
                                    NVC0_NEW_3D_FRAGPROG |
                                    NVC0_NEW_3D_FRAMEBUFFER },
     { nvc0_fragprog_validate,      NVC0_NEW_3D_FRAGPROG | NVC0_NEW_3D_RASTERIZER },
-    { nvc0_validate_derived_1,     NVC0_NEW_3D_FRAGPROG | NVC0_NEW_3D_ZSA |
+    { nvc0_validate_fp_zsa_rast,   NVC0_NEW_3D_FRAGPROG | NVC0_NEW_3D_ZSA |
                                    NVC0_NEW_3D_RASTERIZER },
-    { nvc0_validate_derived_2,     NVC0_NEW_3D_ZSA | NVC0_NEW_3D_FRAMEBUFFER },
-    { nvc0_validate_derived_3,     NVC0_NEW_3D_BLEND | NVC0_NEW_3D_FRAMEBUFFER },
+    { nvc0_validate_zsa_fb,        NVC0_NEW_3D_ZSA | NVC0_NEW_3D_FRAMEBUFFER },
+    { nvc0_validate_blend_fb,      NVC0_NEW_3D_BLEND | NVC0_NEW_3D_FRAMEBUFFER },
+    { nvc0_validate_rast_fb,       NVC0_NEW_3D_RASTERIZER | NVC0_NEW_3D_FRAMEBUFFER },
     { nvc0_validate_clip,          NVC0_NEW_3D_CLIP | NVC0_NEW_3D_RASTERIZER |
                                    NVC0_NEW_3D_VERTPROG |
                                    NVC0_NEW_3D_TEVLPROG |

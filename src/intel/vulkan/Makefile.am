@@ -33,10 +33,10 @@ lib_LTLIBRARIES = libvulkan_intel.la
 check_LTLIBRARIES = libvulkan-test.la
 
 PER_GEN_LIBS = \
-   libanv-gen7.la \
-   libanv-gen75.la \
-   libanv-gen8.la \
-   libanv-gen9.la
+	libanv-gen7.la \
+	libanv-gen75.la \
+	libanv-gen8.la \
+	libanv-gen9.la
 
 noinst_LTLIBRARIES = $(PER_GEN_LIBS)
 
@@ -82,7 +82,6 @@ VULKAN_SOURCES = \
 
 VULKAN_LIB_DEPS =
 
-
 if HAVE_PLATFORM_X11
 AM_CPPFLAGS += \
 	$(XCB_DRI3_CFLAGS) \
@@ -112,10 +111,10 @@ libvulkan_common_la_SOURCES = $(VULKAN_SOURCES)
 
 VULKAN_LIB_DEPS += \
 	libvulkan_common.la \
-	$(top_builddir)/src/intel/isl/libisl.la \
 	$(top_builddir)/src/mesa/drivers/dri/i965/libi965_compiler.la \
-	$(top_builddir)/src/mesa/libmesa.la \
-	$(top_builddir)/src/mesa/drivers/dri/common/libdri_test_stubs.la \
+	$(top_builddir)/src/compiler/nir/libnir.la \
+	$(top_builddir)/src/util/libmesautil.la \
+	$(top_builddir)/src/intel/isl/libisl.la \
 	$(PER_GEN_LIBS) \
 	$(PTHREAD_LIBS) \
 	$(DLOPEN_LIBS) \
@@ -125,18 +124,26 @@ nodist_EXTRA_libvulkan_intel_la_SOURCES = dummy.cpp
 libvulkan_intel_la_SOURCES = $(VULKAN_GEM_FILES)
 
 anv_entrypoints.h : anv_entrypoints_gen.py $(vulkan_include_HEADERS)
-	$(AM_V_GEN)$(CPP) $(AM_CPPFLAGS) $(top_srcdir)/include/vulkan/vulkan_intel.h |\
+	$(AM_V_GEN) cat $(vulkan_include_HEADERS) |\
 	$(PYTHON2) $(srcdir)/anv_entrypoints_gen.py header > $@
 
 anv_entrypoints.c : anv_entrypoints_gen.py $(vulkan_include_HEADERS)
-	$(AM_V_GEN)$(CPP) $(AM_CPPFLAGS) $(top_srcdir)/include/vulkan/vulkan_intel.h |\
+	$(AM_V_GEN) cat $(vulkan_include_HEADERS) |\
 	$(PYTHON2) $(srcdir)/anv_entrypoints_gen.py code > $@
 
+.PHONY: anv_timestamp.h
+
+anv_timestamp.h:
+	@echo "Updating anv_timestamp.h"
+	$(AM_V_GEN) echo "#define ANV_TIMESTAMP \"$(TIMESTAMP_CMD)\"" > $@
+
 BUILT_SOURCES = $(VULKAN_GENERATED_FILES)
-CLEANFILES = $(BUILT_SOURCES)
+CLEANFILES = $(BUILT_SOURCES) dev_icd.json
 EXTRA_DIST = \
 	$(top_srcdir)/include/vulkan/vk_icd.h \
-	anv_entrypoints_gen.py
+	anv_entrypoints_gen.py \
+	dev_icd.json.in \
+	intel_icd.json
 
 libvulkan_intel_la_LIBADD = $(VULKAN_LIB_DEPS)
 

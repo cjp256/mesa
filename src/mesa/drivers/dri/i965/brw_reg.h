@@ -88,6 +88,9 @@ struct brw_device_info;
 #define BRW_SWIZZLE_ZWZW      BRW_SWIZZLE4(2,3,2,3)
 #define BRW_SWIZZLE_WZYX      BRW_SWIZZLE4(3,2,1,0)
 
+#define BRW_SWZ_COMP_INPUT(comp) (BRW_SWIZZLE_XYZW >> ((comp)*2))
+#define BRW_SWZ_COMP_OUTPUT(comp) (BRW_SWIZZLE_XYZW << ((comp)*2))
+
 static inline bool
 brw_is_single_value_swizzle(unsigned swiz)
 {
@@ -260,6 +263,7 @@ struct brw_reg {
       };
 
       double df;
+      uint64_t u64;
       float f;
       int   d;
       unsigned ud;
@@ -270,7 +274,7 @@ static inline bool
 brw_regs_equal(const struct brw_reg *a, const struct brw_reg *b)
 {
    const bool df = a->type == BRW_REGISTER_TYPE_DF && a->file == IMM;
-   return a->bits == b->bits && (df ? a->df == b->df : a->ud == b->ud);
+   return a->bits == b->bits && (df ? a->u64 == b->u64 : a->ud == b->ud);
 }
 
 struct brw_indirect {
@@ -291,15 +295,39 @@ type_sz(unsigned type)
    case BRW_REGISTER_TYPE_UD:
    case BRW_REGISTER_TYPE_D:
    case BRW_REGISTER_TYPE_F:
+   case BRW_REGISTER_TYPE_VF:
       return 4;
    case BRW_REGISTER_TYPE_UW:
    case BRW_REGISTER_TYPE_W:
+   case BRW_REGISTER_TYPE_UV:
+   case BRW_REGISTER_TYPE_V:
+   case BRW_REGISTER_TYPE_HF:
       return 2;
    case BRW_REGISTER_TYPE_UB:
    case BRW_REGISTER_TYPE_B:
       return 1;
    default:
-      return 0;
+      unreachable("not reached");
+   }
+}
+
+/**
+ * Return an integer type of the requested size and signedness.
+ */
+static inline enum brw_reg_type
+brw_int_type(unsigned sz, bool is_signed)
+{
+   switch (sz) {
+   case 1:
+      return (is_signed ? BRW_REGISTER_TYPE_B : BRW_REGISTER_TYPE_UB);
+   case 2:
+      return (is_signed ? BRW_REGISTER_TYPE_W : BRW_REGISTER_TYPE_UW);
+   case 4:
+      return (is_signed ? BRW_REGISTER_TYPE_D : BRW_REGISTER_TYPE_UD);
+   case 8:
+      return (is_signed ? BRW_REGISTER_TYPE_Q : BRW_REGISTER_TYPE_UQ);
+   default:
+      unreachable("Not reached.");
    }
 }
 
@@ -942,6 +970,13 @@ static inline unsigned
 brw_writemask_for_size(unsigned n)
 {
    return (1 << n) - 1;
+}
+
+static inline unsigned
+brw_writemask_for_component_packing(unsigned n, unsigned first_component)
+{
+   assert(first_component + n <= 4);
+   return (((1 << n) - 1) << first_component);
 }
 
 static inline struct brw_reg

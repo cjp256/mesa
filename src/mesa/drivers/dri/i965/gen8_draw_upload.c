@@ -34,11 +34,24 @@
 #include "intel_batchbuffer.h"
 #include "intel_buffer_objects.h"
 
+static bool
+is_passthru_format(uint32_t format)
+{
+   switch (format) {
+   case BRW_SURFACEFORMAT_R64_PASSTHRU:
+   case BRW_SURFACEFORMAT_R64G64_PASSTHRU:
+   case BRW_SURFACEFORMAT_R64G64B64_PASSTHRU:
+   case BRW_SURFACEFORMAT_R64G64B64A64_PASSTHRU:
+      return true;
+   default:
+      return false;
+   }
+}
+
 static void
 gen8_emit_vertices(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
-   uint32_t mocs_wb = brw->gen >= 9 ? SKL_MOCS_WB : BDW_MOCS_WB;
    bool uses_edge_flag;
 
    brw_prepare_vertices(brw);
@@ -127,35 +140,29 @@ gen8_emit_vertices(struct brw_context *brw)
       BEGIN_BATCH(1 + 4 * nr_buffers);
       OUT_BATCH((_3DSTATE_VERTEX_BUFFERS << 16) | (4 * nr_buffers - 1));
       for (unsigned i = 0; i < brw->vb.nr_buffers; i++) {
-         struct brw_vertex_buffer *buffer = &brw->vb.buffers[i];
-         uint32_t dw0 = 0;
-
-         dw0 |= i << GEN6_VB0_INDEX_SHIFT;
-         dw0 |= GEN7_VB0_ADDRESS_MODIFYENABLE;
-         dw0 |= buffer->stride << BRW_VB0_PITCH_SHIFT;
-         dw0 |= mocs_wb << 16;
-
-         OUT_BATCH(dw0);
-         OUT_RELOC64(buffer->bo, I915_GEM_DOMAIN_VERTEX, 0, buffer->offset);
-         OUT_BATCH(buffer->bo->size);
+         const struct brw_vertex_buffer *buffer = &brw->vb.buffers[i];
+         EMIT_VERTEX_BUFFER_STATE(brw, i, buffer->bo,
+                                  buffer->offset,
+                                  buffer->offset + buffer->size,
+                                  buffer->stride, 0 /* unused */);
       }
 
       if (uses_draw_params) {
-         OUT_BATCH(brw->vb.nr_buffers << GEN6_VB0_INDEX_SHIFT |
-                   GEN7_VB0_ADDRESS_MODIFYENABLE |
-                   mocs_wb << 16);
-         OUT_RELOC64(brw->draw.draw_params_bo, I915_GEM_DOMAIN_VERTEX, 0,
-                     brw->draw.draw_params_offset);
-         OUT_BATCH(brw->draw.draw_params_bo->size);
+         EMIT_VERTEX_BUFFER_STATE(brw, brw->vb.nr_buffers,
+                                  brw->draw.draw_params_bo,
+                                  brw->draw.draw_params_offset,
+                                  brw->draw.draw_params_bo->size,
+                                  0 /* stride */,
+                                  0 /* unused */);
       }
 
       if (brw->vs.prog_data->uses_drawid) {
-         OUT_BATCH((brw->vb.nr_buffers + 1) << GEN6_VB0_INDEX_SHIFT |
-                   GEN7_VB0_ADDRESS_MODIFYENABLE |
-                   mocs_wb << 16);
-         OUT_RELOC64(brw->draw.draw_id_bo, I915_GEM_DOMAIN_VERTEX, 0,
-                     brw->draw.draw_id_offset);
-         OUT_BATCH(brw->draw.draw_id_bo->size);
+         EMIT_VERTEX_BUFFER_STATE(brw, brw->vb.nr_buffers + 1,
+                                  brw->draw.draw_id_bo,
+                                  brw->draw.draw_id_offset,
+                                  brw->draw.draw_id_bo->size,
+                                  0 /* stride */,
+                                  0 /* unused */);
       }
       ADVANCE_BATCH();
    }
@@ -193,6 +200,12 @@ gen8_emit_vertices(struct brw_context *brw)
       uint32_t comp2 = BRW_VE1_COMPONENT_STORE_SRC;
       uint32_t comp3 = BRW_VE1_COMPONENT_STORE_SRC;
 
+      /* From the BDW PRM, Volume 2d, page 588 (VERTEX_ELEMENT_STATE):
+       * "Any SourceElementFormat of *64*_PASSTHRU cannot be used with an
+       * element which has edge flag enabled."
+       */
+      assert(!(is_passthru_format(format) && uses_edge_flag));
+
       /* The gen4 driver expects edgeflag to come in as a float, and passes
        * that float on to the tests in the clipper.  Mesa's current vertex
        * attribute value for EdgeFlag is stored as a float, which works out.
@@ -215,6 +228,41 @@ gen8_emit_vertices(struct brw_context *brw)
       case 3: comp3 = input->glarray->Integer ? BRW_VE1_COMPONENT_STORE_1_INT
                                               : BRW_VE1_COMPONENT_STORE_1_FLT;
          break;
+      }
+
+      /* From the BDW PRM, Volume 2d, page 586 (VERTEX_ELEMENT_STATE):
+       *
+       *     "When SourceElementFormat is set to one of the *64*_PASSTHRU
+       *     formats, 64-bit components are stored in the URB without any
+       *     conversion. In this case, vertex elements must be written as 128
+       *     or 256 bits, with VFCOMP_STORE_0 being used to pad the output
+       *     as required. E.g., if R64_PASSTHRU is used to copy a 64-bit Red
+       *     component into the URB, Component 1 must be specified as
+       *     VFCOMP_STORE_0 (with Components 2,3 set to VFCOMP_NOSTORE)
+       *     in order to output a 128-bit vertex element, or Components 1-3 must
+       *     be specified as VFCOMP_STORE_0 in order to output a 256-bit vertex
+       *     element. Likewise, use of R64G64B64_PASSTHRU requires Component 3
+       *     to be specified as VFCOMP_STORE_0 in order to output a 256-bit vertex
+       *     element."
+       */
+      if (input->glarray->Doubles) {
+         switch (input->glarray->Size) {
+         case 0:
+         case 1:
+         case 2:
+            /*  Use 128-bits instead of 256-bits to write double and dvec2
+             *  vertex elements.
+             */
+            comp2 = BRW_VE1_COMPONENT_NOSTORE;
+            comp3 = BRW_VE1_COMPONENT_NOSTORE;
+            break;
+         case 3:
+            /* Pad the output using VFCOMP_STORE_0 as suggested
+             * by the BDW PRM.
+             */
+            comp3 = BRW_VE1_COMPONENT_STORE_0;
+            break;
+         }
       }
 
       OUT_BATCH((input->buffer << GEN6_VE0_INDEX_SHIFT) |
@@ -329,7 +377,7 @@ gen8_emit_index_buffer(struct brw_context *brw)
    OUT_BATCH(CMD_INDEX_BUFFER << 16 | (5 - 2));
    OUT_BATCH(brw_get_index_type(index_buffer->type) | mocs_wb);
    OUT_RELOC64(brw->ib.bo, I915_GEM_DOMAIN_VERTEX, 0, 0);
-   OUT_BATCH(brw->ib.bo->size);
+   OUT_BATCH(brw->ib.size);
    ADVANCE_BATCH();
 }
 

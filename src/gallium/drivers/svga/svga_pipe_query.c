@@ -1078,7 +1078,7 @@ svga_get_query_result(struct pipe_context *pipe,
                                        (void *)&occResult, sizeof(occResult));
          *result = (uint64_t)occResult.samplesRendered;
       } else {
-         ret = get_query_result_vgpu9(svga, sq, wait, (uint64_t *)result);
+         ret = get_query_result_vgpu9(svga, sq, wait, result);
       }
       break;
    case PIPE_QUERY_OCCLUSION_PREDICATE: {
@@ -1089,7 +1089,7 @@ svga_get_query_result(struct pipe_context *pipe,
          vresult->b = occResult.anySamplesRendered != 0;
       } else {
          uint64_t count;
-         ret = get_query_result_vgpu9(svga, sq, wait, (uint64_t *)&count);
+         ret = get_query_result_vgpu9(svga, sq, wait, &count);
          vresult->b = count != 0;
       }
       break;
@@ -1219,13 +1219,19 @@ svga_render_condition(struct pipe_context *pipe, struct pipe_query *q,
          sws->fence_finish(sws, sq->fence, SVGA_FENCE_FLAG_QUERY);
       }
    }
-
-   ret = SVGA3D_vgpu10_SetPredication(svga->swc, queryId,
-                                      (uint32) condition);
-   if (ret != PIPE_OK) {
-      svga_context_flush(svga, NULL);
+   /*
+    * if the kernel module doesn't support the predication command,
+    * we'll just render unconditionally.
+    * This is probably acceptable for the typical case of occlusion culling.
+    */
+   if (sws->have_set_predication_cmd) {
       ret = SVGA3D_vgpu10_SetPredication(svga->swc, queryId,
                                          (uint32) condition);
+      if (ret != PIPE_OK) {
+         svga_context_flush(svga, NULL);
+         ret = SVGA3D_vgpu10_SetPredication(svga->swc, queryId,
+                                            (uint32) condition);
+      }
    }
 }
 

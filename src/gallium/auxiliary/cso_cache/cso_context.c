@@ -51,8 +51,7 @@
 
 
 /**
- * Info related to samplers and sampler views.
- * We have one of these for fragment samplers and another for vertex samplers.
+ * Per-shader sampler information.
  */
 struct sampler_info
 {
@@ -91,6 +90,9 @@ struct cso_context {
 
    struct pipe_constant_buffer aux_constbuf_current[PIPE_SHADER_TYPES];
    struct pipe_constant_buffer aux_constbuf_saved[PIPE_SHADER_TYPES];
+
+   struct pipe_image_view fragment_image0_current;
+   struct pipe_image_view fragment_image0_saved;
 
    unsigned nr_so_targets;
    struct pipe_stream_output_target *so_targets[PIPE_MAX_SO_BUFFERS];
@@ -371,6 +373,9 @@ void cso_destroy_context( struct cso_context *ctx )
       pipe_resource_reference(&ctx->aux_constbuf_current[i].buffer, NULL);
       pipe_resource_reference(&ctx->aux_constbuf_saved[i].buffer, NULL);
    }
+
+   pipe_resource_reference(&ctx->fragment_image0_current.resource, NULL);
+   pipe_resource_reference(&ctx->fragment_image0_saved.resource, NULL);
 
    for (i = 0; i < PIPE_MAX_SO_BUFFERS; i++) {
       pipe_so_target_reference(&ctx->so_targets[i], NULL);
@@ -1154,7 +1159,6 @@ unsigned cso_get_aux_vertex_buffer_slot(struct cso_context *ctx)
 }
 
 
-/**************** fragment/vertex sampler view state *************************/
 
 enum pipe_error
 cso_single_sampler(struct cso_context *ctx, unsigned shader_stage,
@@ -1199,6 +1203,9 @@ cso_single_sampler(struct cso_context *ctx, unsigned shader_stage,
 }
 
 
+/**
+ * Send staged sampler state to the driver.
+ */
 void
 cso_single_sampler_done(struct cso_context *ctx, unsigned shader_stage)
 {
@@ -1233,9 +1240,6 @@ cso_set_samplers(struct cso_context *ctx,
    struct sampler_info *info = &ctx->samplers[shader_stage];
    unsigned i;
    enum pipe_error temp, error = PIPE_OK;
-
-   /* TODO: fastpath
-    */
 
    for (i = 0; i < nr; i++) {
       temp = cso_single_sampler(ctx, shader_stage, i, templates[i]);
@@ -1351,6 +1355,35 @@ cso_restore_fragment_sampler_views(struct cso_context *ctx)
 
    ctx->nr_fragment_views = nr_saved;
    ctx->nr_fragment_views_saved = 0;
+}
+
+
+void
+cso_set_shader_images(struct cso_context *ctx, unsigned shader_stage,
+                      unsigned start, unsigned count,
+                      struct pipe_image_view *images)
+{
+   if (shader_stage == PIPE_SHADER_FRAGMENT && start == 0 && count >= 1) {
+      util_copy_image_view(&ctx->fragment_image0_current, &images[0]);
+   }
+
+   ctx->pipe->set_shader_images(ctx->pipe, shader_stage, start, count, images);
+}
+
+
+static void
+cso_save_fragment_image0(struct cso_context *ctx)
+{
+   util_copy_image_view(&ctx->fragment_image0_saved,
+                        &ctx->fragment_image0_current);
+}
+
+
+static void
+cso_restore_fragment_image0(struct cso_context *ctx)
+{
+   cso_set_shader_images(ctx, PIPE_SHADER_FRAGMENT, 0, 1,
+                         &ctx->fragment_image0_saved);
 }
 
 
@@ -1543,6 +1576,8 @@ cso_save_state(struct cso_context *cso, unsigned state_mask)
       cso_save_viewport(cso);
    if (state_mask & CSO_BIT_PAUSE_QUERIES)
       cso->pipe->set_active_query_state(cso->pipe, false);
+   if (state_mask & CSO_BIT_FRAGMENT_IMAGE0)
+      cso_save_fragment_image0(cso);
 }
 
 
@@ -1596,6 +1631,8 @@ cso_restore_state(struct cso_context *cso)
       cso_restore_viewport(cso);
    if (state_mask & CSO_BIT_PAUSE_QUERIES)
       cso->pipe->set_active_query_state(cso->pipe, true);
+   if (state_mask & CSO_BIT_FRAGMENT_IMAGE0)
+      cso_restore_fragment_image0(cso);
 
    cso->saved_state = 0;
 }

@@ -30,7 +30,19 @@
 #include "rdtsc_buckets.h"
 #include <inttypes.h>
 
+#if defined(_WIN32)
+#define PATH_SEPARATOR "\\"
+#elif defined(__unix__) || defined(__APPLE__)
+#define PATH_SEPARATOR "/"
+#else
+#error "Unsupported platform"
+#endif
+
 THREAD UINT tlsThreadId = 0;
+
+BucketManager::~BucketManager()
+{
+}
 
 void BucketManager::RegisterThread(const std::string& name)
 {
@@ -43,7 +55,7 @@ void BucketManager::RegisterThread(const std::string& name)
         mThreadVizDir = str.str();
         CreateDirectory(mThreadVizDir.c_str(), NULL);
 
-        mThreadViz = true;
+        mThreadViz = KNOB_BUCKETS_ENABLE_THREADVIZ;
     }
 
     BUCKET_THREAD newThread;
@@ -64,7 +76,8 @@ void BucketManager::RegisterThread(const std::string& name)
     if (mThreadViz)
     {
         std::stringstream ss;
-        ss << mThreadVizDir << "\\threadviz_thread." << newThread.id << ".dat";
+        ss << mThreadVizDir << PATH_SEPARATOR;
+        ss << "threadviz_thread." << newThread.id << ".dat";
         newThread.vizFile = fopen(ss.str().c_str(), "wb");
     }
 
@@ -166,12 +179,13 @@ void BucketManager::DumpThreadViz()
     {
         fflush(thread.vizFile);
         fclose(thread.vizFile);
+        thread.vizFile = nullptr;
     }
     mThreadMutex.unlock();
 
     // dump bucket descriptions
     std::stringstream ss;
-    ss << mThreadVizDir << "\\threadviz_buckets.dat";
+    ss << mThreadVizDir << PATH_SEPARATOR << "threadviz_buckets.dat";
 
     FILE* f = fopen(ss.str().c_str(), "wb");
     for (auto& bucket : mBuckets)
@@ -197,10 +211,20 @@ void BucketManager::PrintReport(const std::string& filename)
             PrintThread(f, thread);
             fprintf(f, "\n");
         }
+
         mThreadMutex.unlock();
 
         fclose(f);
     }
+}
+
+
+void BucketManager::StartCapture()
+{
+
+    printf("Capture Starting\n");
+
+    mCapturing = true;
 }
 
 void BucketManager_StartBucket(BucketManager* pBucketMgr, uint32_t id)

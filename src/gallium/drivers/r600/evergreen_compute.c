@@ -46,9 +46,6 @@
 #include "evergreen_compute_internal.h"
 #include "compute_memory_pool.h"
 #include "sb/sb_public.h"
-#ifdef HAVE_OPENCL
-#include "radeon/radeon_llvm_util.h"
-#endif
 #include "radeon/radeon_elf_util.h"
 #include <inttypes.h>
 
@@ -242,7 +239,7 @@ static void r600_destroy_shader(struct r600_bytecode *bc)
 }
 
 static void *evergreen_create_compute_state(struct pipe_context *ctx,
-					    const const struct pipe_compute_state *cso)
+					    const struct pipe_compute_state *cso)
 {
 	struct r600_context *rctx = (struct r600_context *)ctx;
 	struct r600_pipe_compute *shader = CALLOC_STRUCT(r600_pipe_compute);
@@ -372,7 +369,11 @@ static void evergreen_compute_upload_input(struct pipe_context *ctx,
 
 	ctx->transfer_unmap(ctx, transfer);
 
-	/* ID=0 is reserved for the parameters */
+	/* ID=0 and ID=3 are reserved for the parameters.
+	 * LLVM will preferably use ID=0, but it does not work for dynamic
+	 * indices. */
+	evergreen_cs_set_vertex_buffer(rctx, 3, 0,
+			(struct pipe_resource*)shader->kernel_param);
 	evergreen_cs_set_constant_buffer(rctx, 0, 0, input_size,
 			(struct pipe_resource*)shader->kernel_param);
 }
@@ -452,7 +453,7 @@ static void compute_emit_cs(struct r600_context *rctx,
 	unsigned i;
 
 	/* make sure that the gfx ring is only one active */
-	if (rctx->b.dma.cs && rctx->b.dma.cs->cdw) {
+	if (radeon_emitted(rctx->b.dma.cs, 0)) {
 		rctx->b.dma.flush(rctx, RADEON_FLUSH_ASYNC, NULL);
 	}
 
@@ -618,9 +619,9 @@ static void evergreen_set_compute_resources(struct pipe_context *ctx,
 			start, count);
 
 	for (unsigned i = 0; i < count; i++) {
-		/* The First three vertex buffers are reserved for parameters and
+		/* The First four vertex buffers are reserved for parameters and
 		 * global buffers. */
-		unsigned vtx_id = 3 + i;
+		unsigned vtx_id = 4 + i;
 		if (resources[i]) {
 			struct r600_resource_global *buffer =
 				(struct r600_resource_global*)

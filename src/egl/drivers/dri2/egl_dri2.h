@@ -177,7 +177,6 @@ struct dri2_egl_display
    int                       fd;
 
    int                       own_device;
-   int                       swap_available;
    int                       invalidate_available;
    int                       min_swap_interval;
    int                       max_swap_interval;
@@ -197,6 +196,7 @@ struct dri2_egl_display
 #ifdef HAVE_X11_PLATFORM
    xcb_connection_t         *conn;
    int                      screen;
+   int                      swap_available;
 #ifdef HAVE_DRI3
    struct loader_dri3_extensions loader_dri3_ext;
 #endif
@@ -290,8 +290,13 @@ struct dri2_egl_surface
    /* EGL-owned buffers */
    __DRIbuffer           *local_buffers[__DRI_BUFFER_COUNT];
 #endif
-};
 
+#if defined(HAVE_SURFACELESS_PLATFORM)
+      __DRIimage           *front;
+      unsigned int         visual;
+#endif
+
+};
 
 struct dri2_egl_config
 {
@@ -359,6 +364,10 @@ _EGLImage *
 dri2_create_image_khr(_EGLDriver *drv, _EGLDisplay *disp,
 		      _EGLContext *ctx, EGLenum target,
 		      EGLClientBuffer buffer, const EGLint *attr_list);
+
+_EGLImage *
+dri2_create_image_dma_buf(_EGLDisplay *disp, _EGLContext *ctx,
+			  EGLClientBuffer buffer, const EGLint *attr_list);
 
 EGLBoolean
 dri2_initialize_x11(_EGLDriver *drv, _EGLDisplay *disp);

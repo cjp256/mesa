@@ -36,6 +36,7 @@
 
 #include "rdtsc_buckets_shared.h"
 
+
 // unique thread id stored in thread local storage
 extern THREAD UINT tlsThreadId;
 
@@ -48,11 +49,23 @@ class BucketManager
 {
 public:
     BucketManager() { }
+    ~BucketManager();
 
     // removes all registered thread data
     void ClearThreads()
     {
         mThreadMutex.lock();
+        // close out the threadviz files if threadviz is enabled
+        if (KNOB_BUCKETS_ENABLE_THREADVIZ)
+        {
+            for (auto& thread : mThreads)
+            {
+                if (thread.vizFile != nullptr)
+                {
+                    fclose(thread.vizFile);
+                }
+            }
+        }
         mThreads.clear();
         mThreadMutex.unlock();
     }
@@ -81,11 +94,9 @@ public:
     // print report
     void PrintReport(const std::string& filename);
 
+
     // start capturing
-    INLINE void StartCapture()
-    {
-        mCapturing = true;
-    }
+    void StartCapture();
 
     // stop capturing
     INLINE void StopCapture()
@@ -99,13 +110,16 @@ public:
             stillCapturing = false;
             for (const BUCKET_THREAD& t : mThreads)
             {
-                if (t.pCurrent != &t.root)
+                if (t.level > 0)
                 {
                     stillCapturing = true;
                     continue;
                 }
             }
         }
+
+        mDoneCapturing = true;
+        printf("Capture Stopped\n");
     }
 
     // start a bucket
@@ -118,13 +132,15 @@ public:
 
         BUCKET_THREAD& bt = mThreads[tlsThreadId];
 
+        uint64_t tsc = __rdtsc();
+
         // if threadviz is enabled, only need to dump start info to threads viz file
         if (mThreadViz)
         {
             SWR_ASSERT(bt.vizFile != nullptr);
             if (mBuckets[id].enableThreadViz)
             {
-                VIZ_START_DATA data{ VIZ_START, id, __rdtsc() };
+                VIZ_START_DATA data{ VIZ_START, id, tsc };
                 Serialize(bt.vizFile, data);
             }
         }
@@ -137,11 +153,12 @@ public:
             BUCKET &child = bt.pCurrent->children[id];
             child.pParent = bt.pCurrent;
             child.id = id;
-            child.start = __rdtsc();
+            child.start = tsc;
 
             // update thread's currently executing bucket
             bt.pCurrent = &child;
         }
+
 
         bt.level++;
     }
@@ -152,14 +169,19 @@ public:
         SWR_ASSERT(tlsThreadId < mThreads.size());
         BUCKET_THREAD &bt = mThreads[tlsThreadId];
 
-        if (bt.level == 0) return;
+        if (bt.level == 0)
+        {
+            return;
+        }
+
+        uint64_t tsc = __rdtsc();
 
         if (mThreadViz)
         {
             SWR_ASSERT(bt.vizFile != nullptr);
             if (mBuckets[id].enableThreadViz)
             {
-                VIZ_STOP_DATA data{ VIZ_STOP, __rdtsc() };
+                VIZ_STOP_DATA data{ VIZ_STOP, tsc };
                 Serialize(bt.vizFile, data);
             }
         }
@@ -168,7 +190,7 @@ public:
             if (bt.pCurrent->start == 0) return;
             SWR_ASSERT(bt.pCurrent->id == id, "Mismatched buckets detected");
 
-            bt.pCurrent->elapsed += (__rdtsc() - bt.pCurrent->start);
+            bt.pCurrent->elapsed += (tsc - bt.pCurrent->start);
             bt.pCurrent->count++;
 
             // pop to parent
@@ -213,11 +235,15 @@ private:
     // is capturing currently enabled
     volatile bool mCapturing{ false };
 
+    // has capturing completed
+    volatile bool mDoneCapturing{ false };
+
     std::mutex mThreadMutex;
 
     // enable threadviz
     bool mThreadViz{ false };
     std::string mThreadVizDir;
+
 };
 
 

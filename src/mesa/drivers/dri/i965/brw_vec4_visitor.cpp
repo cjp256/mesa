@@ -183,6 +183,7 @@ ALU3(MAD)
 ALU2_ACC(ADDC)
 ALU2_ACC(SUBB)
 ALU2(MAC)
+ALU1(DIM)
 
 /** Gen4 predicated IF. */
 vec4_instruction *
@@ -566,18 +567,12 @@ vec4_visitor::emit_pack_snorm_4x8(const dst_reg &dst, const src_reg &src0)
    emit(VEC4_OPCODE_PACK_BYTES, dst, bytes);
 }
 
-/**
- * Returns the minimum number of vec4 elements needed to pack a type.
- *
- * For simple types, it will return 1 (a single vec4); for matrices, the
- * number of columns; for array and struct, the sum of the vec4_size of
- * each of its elements; and for sampler and atomic, zero.
- *
- * This method is useful to calculate how much register space is needed to
- * store a particular type.
+/*
+ * Returns the minimum number of vec4 (as_vec4 == true) or dvec4 (as_vec4 ==
+ * false) elements needed to pack a type.
  */
-extern "C" int
-type_size_vec4(const struct glsl_type *type)
+static int
+type_size_xvec4(const struct glsl_type *type, bool as_vec4)
 {
    unsigned int i;
    int size;
@@ -590,7 +585,8 @@ type_size_vec4(const struct glsl_type *type)
    case GLSL_TYPE_DOUBLE:
       if (type->is_matrix()) {
          const glsl_type *col_type = type->column_type();
-         unsigned col_slots = col_type->is_dual_slot_double() ? 2 : 1;
+         unsigned col_slots =
+            (as_vec4 && col_type->is_dual_slot()) ? 2 : 1;
          return type->matrix_columns * col_slots;
       } else {
          /* Regardless of size of vector, it gets a vec4. This is bad
@@ -598,15 +594,15 @@ type_size_vec4(const struct glsl_type *type)
           * mess.  Hopefully a later pass over the code can pack scalars
           * down if appropriate.
           */
-         return type->is_dual_slot_double() ? 2 : 1;
+         return (as_vec4 && type->is_dual_slot()) ? 2 : 1;
       }
    case GLSL_TYPE_ARRAY:
       assert(type->length > 0);
-      return type_size_vec4(type->fields.array) * type->length;
+      return type_size_xvec4(type->fields.array, as_vec4) * type->length;
    case GLSL_TYPE_STRUCT:
       size = 0;
       for (i = 0; i < type->length; i++) {
-	 size += type_size_vec4(type->fields.structure[i].type);
+	 size += type_size_xvec4(type->fields.structure[i].type, as_vec4);
       }
       return size;
    case GLSL_TYPE_SUBROUTINE:
@@ -629,6 +625,47 @@ type_size_vec4(const struct glsl_type *type)
    }
 
    return 0;
+}
+
+/**
+ * Returns the minimum number of vec4 elements needed to pack a type.
+ *
+ * For simple types, it will return 1 (a single vec4); for matrices, the
+ * number of columns; for array and struct, the sum of the vec4_size of
+ * each of its elements; and for sampler and atomic, zero.
+ *
+ * This method is useful to calculate how much register space is needed to
+ * store a particular type.
+ */
+extern "C" int
+type_size_vec4(const struct glsl_type *type)
+{
+   return type_size_xvec4(type, true);
+}
+
+/**
+ * Returns the minimum number of dvec4 elements needed to pack a type.
+ *
+ * For simple types, it will return 1 (a single dvec4); for matrices, the
+ * number of columns; for array and struct, the sum of the dvec4_size of
+ * each of its elements; and for sampler and atomic, zero.
+ *
+ * This method is useful to calculate how much register space is needed to
+ * store a particular type.
+ *
+ * Measuring double-precision vertex inputs as dvec4 is required because
+ * ARB_vertex_attrib_64bit states that these uses the same number of locations
+ * than the single-precision version. That is, two consecutives dvec4 would be
+ * located in location "x" and location "x+1", not "x+2".
+ *
+ * In order to map vec4/dvec4 vertex inputs in the proper ATTRs,
+ * remap_vs_attrs() will take in account both the location and also if the
+ * type fits in one or two vec4 slots.
+ */
+extern "C" int
+type_size_dvec4(const struct glsl_type *type)
+{
+   return type_size_xvec4(type, false);
 }
 
 src_reg::src_reg(class vec4_visitor *v, const struct glsl_type *type)
@@ -870,7 +907,6 @@ vec4_visitor::emit_texture(ir_texture_opcode op,
                            uint32_t constant_offset,
                            src_reg offset_value,
                            src_reg mcs,
-                           bool is_cube_array,
                            uint32_t surface,
                            src_reg surface_reg,
                            uint32_t sampler,
@@ -1058,16 +1094,10 @@ vec4_visitor::emit_texture(ir_texture_opcode op,
    /* fixup num layers (z) for cube arrays: hardware returns faces * layers;
     * spec requires layers.
     */
-   if (op == ir_txs) {
-      if (is_cube_array) {
-         emit_math(SHADER_OPCODE_INT_QUOTIENT,
-                   writemask(inst->dst, WRITEMASK_Z),
-                   src_reg(inst->dst), brw_imm_d(6));
-      } else if (devinfo->gen < 7) {
-         /* Gen4-6 return 0 instead of 1 for single layer surfaces. */
-         emit_minmax(BRW_CONDITIONAL_GE, writemask(inst->dst, WRITEMASK_Z),
-                     src_reg(inst->dst), brw_imm_d(1));
-      }
+   if (op == ir_txs && devinfo->gen < 7) {
+      /* Gen4-6 return 0 instead of 1 for single layer surfaces. */
+      emit_minmax(BRW_CONDITIONAL_GE, writemask(inst->dst, WRITEMASK_Z),
+                  src_reg(inst->dst), brw_imm_d(1));
    }
 
    if (devinfo->gen == 6 && op == ir_tg4) {
@@ -1242,10 +1272,32 @@ vec4_visitor::emit_generic_urb_slot(dst_reg reg, int varying)
    assert(varying < VARYING_SLOT_MAX);
    assert(output_reg[varying].type == reg.type);
    current_annotation = output_reg_annotation[varying];
-   if (output_reg[varying].file != BAD_FILE)
+   if (output_reg[varying].file != BAD_FILE) {
       return emit(MOV(reg, src_reg(output_reg[varying])));
-   else
+   } else
       return NULL;
+}
+
+void
+vec4_visitor::emit_generic_urb_slot(dst_reg reg, int varying, int component)
+{
+   assert(varying < VARYING_SLOT_MAX);
+   assert(varying >= VARYING_SLOT_VAR0);
+   varying = varying - VARYING_SLOT_VAR0;
+
+   unsigned num_comps = output_generic_num_components[varying][component];
+   if (num_comps == 0)
+      return;
+
+   assert(output_generic_reg[varying][component].type == reg.type);
+   current_annotation = output_reg_annotation[varying];
+   if (output_generic_reg[varying][component].file != BAD_FILE) {
+      src_reg src = src_reg(output_generic_reg[varying][component]);
+      src.swizzle = BRW_SWZ_COMP_OUTPUT(component);
+      reg.writemask =
+         brw_writemask_for_component_packing(num_comps, component);
+      emit(MOV(reg, src));
+   }
 }
 
 void
@@ -1287,7 +1339,13 @@ vec4_visitor::emit_urb_slot(dst_reg reg, int varying)
       /* No need to write to this slot */
       break;
    default:
-      emit_generic_urb_slot(reg, varying);
+      if (varying >= VARYING_SLOT_VAR0) {
+         for (int i = 0; i < 4; i++) {
+            emit_generic_urb_slot(reg, varying, i);
+         }
+      } else {
+         emit_generic_urb_slot(reg, varying);
+      }
       break;
    }
 }
@@ -1734,6 +1792,9 @@ vec4_visitor::vec4_visitor(const struct brw_compiler *compiler,
    this->base_ir = NULL;
    this->current_annotation = NULL;
    memset(this->output_reg_annotation, 0, sizeof(this->output_reg_annotation));
+
+   memset(this->output_generic_num_components, 0,
+          sizeof(this->output_generic_num_components));
 
    this->virtual_grf_start = NULL;
    this->virtual_grf_end = NULL;

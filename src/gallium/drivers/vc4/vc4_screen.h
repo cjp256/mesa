@@ -50,6 +50,10 @@ struct vc4_screen {
         struct pipe_screen base;
         int fd;
 
+        int v3d_ver;
+
+        const char *name;
+
         void *simulator_mem_base;
         uint32_t simulator_mem_size;
 
@@ -75,6 +79,7 @@ struct vc4_screen {
 
         uint32_t bo_size;
         uint32_t bo_count;
+        bool has_control_flow;
 };
 
 static inline struct vc4_screen *

@@ -343,7 +343,7 @@ DD_IMM_STATE(polygon_stipple, const struct pipe_poly_stipple, *state, state)
 static void
 dd_context_set_constant_buffer(struct pipe_context *_pipe,
                                uint shader, uint index,
-                               struct pipe_constant_buffer *constant_buffer)
+                               const struct pipe_constant_buffer *constant_buffer)
 {
    struct dd_context *dctx = dd_context(_pipe);
    struct pipe_context *pipe = dctx->pipe;
@@ -491,7 +491,7 @@ dd_context_set_sampler_views(struct pipe_context *_pipe, unsigned shader,
 static void
 dd_context_set_shader_images(struct pipe_context *_pipe, unsigned shader,
                              unsigned start, unsigned num,
-                             struct pipe_image_view *views)
+                             const struct pipe_image_view *views)
 {
    struct dd_context *dctx = dd_context(_pipe);
    struct pipe_context *pipe = dctx->pipe;
@@ -504,7 +504,7 @@ dd_context_set_shader_images(struct pipe_context *_pipe, unsigned shader,
 static void
 dd_context_set_shader_buffers(struct pipe_context *_pipe, unsigned shader,
                               unsigned start, unsigned num_buffers,
-                              struct pipe_shader_buffer *buffers)
+                              const struct pipe_shader_buffer *buffers)
 {
    struct dd_context *dctx = dd_context(_pipe);
    struct pipe_context *pipe = dctx->pipe;
@@ -662,6 +662,17 @@ dd_context_get_device_reset_status(struct pipe_context *_pipe)
 }
 
 static void
+dd_context_emit_string_marker(struct pipe_context *_pipe,
+                              const char *string, int len)
+{
+   struct dd_context *dctx = dd_context(_pipe);
+   struct pipe_context *pipe = dctx->pipe;
+
+   pipe->emit_string_marker(pipe, string, len);
+   dd_parse_apitrace_marker(string, len, &dctx->apitrace_call_number);
+}
+
+static void
 dd_context_dump_debug_state(struct pipe_context *_pipe, FILE *stream,
                             unsigned flags)
 {
@@ -761,15 +772,13 @@ dd_context_create(struct dd_screen *dscreen, struct pipe_context *pipe)
    CTX_INIT(memory_barrier);
    /* create_video_codec */
    /* create_video_buffer */
-   /* create_compute_state */
-   /* bind_compute_state */
-   /* delete_compute_state */
    /* set_compute_resources */
    /* set_global_binding */
    CTX_INIT(get_sample_position);
    CTX_INIT(invalidate_resource);
    CTX_INIT(get_device_reset_status);
    CTX_INIT(dump_debug_state);
+   CTX_INIT(emit_string_marker);
 
    dd_init_draw_functions(dctx);
 

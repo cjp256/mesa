@@ -47,6 +47,7 @@
 #include <assert.h>
 
 #include "main/mtypes.h"
+#include "isl/isl.h"
 #include "intel_bufmgr.h"
 #include "intel_resolve_map.h"
 #include <GL/internal/dri_interface.h>
@@ -625,6 +626,11 @@ struct intel_mipmap_tree
    struct intel_mipmap_tree *mcs_mt;
 
    /**
+    * Planes 1 and 2 in case this is a planar surface.
+    */
+   struct intel_mipmap_tree *plane[2];
+
+   /**
     * Fast clear state for this buffer.
     */
    enum intel_fast_clear_state fast_clear_state;
@@ -790,6 +796,20 @@ void
 intel_miptree_get_image_offset(const struct intel_mipmap_tree *mt,
 			       GLuint level, GLuint slice,
 			       GLuint *x, GLuint *y);
+
+void
+intel_miptree_get_isl_surf(struct brw_context *brw,
+                           const struct intel_mipmap_tree *mt,
+                           struct isl_surf *surf);
+void
+intel_miptree_get_aux_isl_surf(struct brw_context *brw,
+                               const struct intel_mipmap_tree *mt,
+                               struct isl_surf *surf,
+                               enum isl_aux_usage *usage);
+
+union isl_color_value
+intel_miptree_get_isl_clear_color(struct brw_context *brw,
+                                  const struct intel_mipmap_tree *mt);
 
 void
 intel_get_image_dims(struct gl_texture_image *image,

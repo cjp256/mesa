@@ -265,9 +265,28 @@ struct _mesa_glsl_parse_state {
       return ARB_compute_shader_enable || is_version(430, 310);
    }
 
+   bool has_shader_io_blocks() const
+   {
+      return OES_shader_io_blocks_enable ||
+             EXT_shader_io_blocks_enable ||
+             is_version(150, 320);
+   }
+
    bool has_geometry_shader() const
    {
       return OES_geometry_shader_enable || is_version(150, 320);
+   }
+
+   bool has_clip_distance() const
+   {
+      return EXT_clip_cull_distance_enable || is_version(130, 0);
+   }
+
+   bool has_cull_distance() const
+   {
+      return EXT_clip_cull_distance_enable ||
+             ARB_cull_distance_enable ||
+             is_version(450, 0);
    }
 
    void process_version_directive(YYLTYPE *locp, int version,
@@ -287,6 +306,7 @@ struct _mesa_glsl_parse_state {
    bool es_shader;
    unsigned language_version;
    unsigned forced_language_version;
+   bool zero_init;
    gl_shader_stage stage;
 
    /**
@@ -556,6 +576,8 @@ struct _mesa_glsl_parse_state {
    bool ARB_shader_clock_warn;
    bool ARB_shader_draw_parameters_enable;
    bool ARB_shader_draw_parameters_warn;
+   bool ARB_shader_group_vote_enable;
+   bool ARB_shader_group_vote_warn;
    bool ARB_shader_image_load_store_enable;
    bool ARB_shader_image_load_store_warn;
    bool ARB_shader_image_size_enable;
@@ -614,6 +636,8 @@ struct _mesa_glsl_parse_state {
    bool OES_sample_variables_warn;
    bool OES_shader_image_atomic_enable;
    bool OES_shader_image_atomic_warn;
+   bool OES_shader_io_blocks_enable;
+   bool OES_shader_io_blocks_warn;
    bool OES_shader_multisample_interpolation_enable;
    bool OES_shader_multisample_interpolation_warn;
    bool OES_standard_derivatives_enable;
@@ -639,6 +663,8 @@ struct _mesa_glsl_parse_state {
    bool AMD_vertex_shader_viewport_index_warn;
    bool EXT_blend_func_extended_enable;
    bool EXT_blend_func_extended_warn;
+   bool EXT_clip_cull_distance_enable;
+   bool EXT_clip_cull_distance_warn;
    bool EXT_draw_buffers_enable;
    bool EXT_draw_buffers_warn;
    bool EXT_gpu_shader5_enable;
@@ -647,12 +673,16 @@ struct _mesa_glsl_parse_state {
    bool EXT_separate_shader_objects_warn;
    bool EXT_shader_integer_mix_enable;
    bool EXT_shader_integer_mix_warn;
+   bool EXT_shader_io_blocks_enable;
+   bool EXT_shader_io_blocks_warn;
    bool EXT_shader_samples_identical_enable;
    bool EXT_shader_samples_identical_warn;
    bool EXT_texture_array_enable;
    bool EXT_texture_array_warn;
    bool EXT_texture_buffer_enable;
    bool EXT_texture_buffer_warn;
+   bool MESA_shader_integer_functions_enable;
+   bool MESA_shader_integer_functions_warn;
    /*@}*/
 
    /** Extensions supported by the OpenGL implementation. */

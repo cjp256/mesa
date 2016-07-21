@@ -163,7 +163,7 @@ nouveau_transfer_staging(struct nouveau_context *nv,
    return tx->map;
 }
 
-/* Copies data from the resource into the the transfer's temporary GART
+/* Copies data from the resource into the transfer's temporary GART
  * buffer. Also updates buf->data if present.
  *
  * Maybe just migrate to GART right away if we actually need to do this. */
@@ -685,10 +685,7 @@ nouveau_buffer_create(struct pipe_screen *pscreen,
       if (buffer->base.bind & screen->sysmem_bindings)
          buffer->domain = NOUVEAU_BO_GART;
    }
-   /* There can be very special situations where we want non-gpu-mapped
-    * buffers, but never through this interface.
-    */
-   assert(buffer->domain);
+
    ret = nouveau_buffer_allocate(screen, buffer, buffer->domain);
 
    if (ret == false)

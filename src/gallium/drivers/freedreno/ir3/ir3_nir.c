@@ -42,6 +42,8 @@ static const nir_shader_compiler_options options = {
 		.lower_flrp32 = true,
 		.lower_flrp64 = true,
 		.lower_ffract = true,
+		.lower_fmod32 = true,
+		.lower_fmod64 = true,
 		.lower_fdiv = true,
 		.fuse_ffma = true,
 		.native_integers = true,
@@ -80,6 +82,27 @@ ir3_key_lowers_nir(const struct ir3_shader_key *key)
 
 #define OPT_V(nir, pass, ...) NIR_PASS_V(nir, pass, ##__VA_ARGS__)
 
+static void
+ir3_optimize_loop(nir_shader *s)
+{
+	bool progress;
+	do {
+		progress = false;
+
+		OPT_V(s, nir_lower_vars_to_ssa);
+		OPT_V(s, nir_lower_alu_to_scalar);
+		OPT_V(s, nir_lower_phis_to_scalar);
+
+		progress |= OPT(s, nir_copy_prop);
+		progress |= OPT(s, nir_opt_dce);
+		progress |= OPT(s, nir_opt_cse);
+		progress |= OPT(s, ir3_nir_lower_if_else);
+		progress |= OPT(s, nir_opt_algebraic);
+		progress |= OPT(s, nir_opt_constant_folding);
+
+	} while (progress);
+}
+
 struct nir_shader *
 ir3_optimize_nir(struct ir3_shader *shader, nir_shader *s,
 		const struct ir3_shader_key *key)
@@ -87,7 +110,6 @@ ir3_optimize_nir(struct ir3_shader *shader, nir_shader *s,
 	struct nir_lower_tex_options tex_options = {
 			.lower_rect = 0,
 	};
-	bool progress;
 
 	if (key) {
 		switch (shader->type) {
@@ -143,24 +165,15 @@ ir3_optimize_nir(struct ir3_shader *shader, nir_shader *s,
 	}
 
 	OPT_V(s, nir_lower_tex, &tex_options);
-	OPT_V(s, nir_lower_idiv);
 	OPT_V(s, nir_lower_load_const_to_scalar);
 
-	do {
-		progress = false;
+	ir3_optimize_loop(s);
 
-		OPT_V(s, nir_lower_vars_to_ssa);
-		OPT_V(s, nir_lower_alu_to_scalar);
-		OPT_V(s, nir_lower_phis_to_scalar);
-
-		progress |= OPT(s, nir_copy_prop);
-		progress |= OPT(s, nir_opt_dce);
-		progress |= OPT(s, nir_opt_cse);
-		progress |= OPT(s, ir3_nir_lower_if_else);
-		progress |= OPT(s, nir_opt_algebraic);
-		progress |= OPT(s, nir_opt_constant_folding);
-
-	} while (progress);
+	/* do idiv lowering after first opt loop to give a chance for
+	 * divide by immed power-of-two to be caught first:
+	 */
+	if (OPT(s, nir_lower_idiv))
+		ir3_optimize_loop(s);
 
 	OPT_V(s, nir_remove_dead_variables, nir_var_local);
 

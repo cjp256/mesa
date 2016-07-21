@@ -244,7 +244,8 @@ get_implicit_conversion_operation(const glsl_type *to, const glsl_type *from,
       }
 
    case GLSL_TYPE_UINT:
-      if (!state->is_version(400, 0) && !state->ARB_gpu_shader5_enable)
+      if (!state->is_version(400, 0) && !state->ARB_gpu_shader5_enable
+          && !state->MESA_shader_integer_functions_enable)
          return (ir_expression_operation)0;
       switch (from->base_type) {
          case GLSL_TYPE_INT: return ir_unop_i2u;
@@ -822,7 +823,7 @@ validate_assignment(struct _mesa_glsl_parse_state *state,
     */
    if (state->stage == MESA_SHADER_TESS_CTRL && !lhs->type->is_error()) {
       ir_variable *var = lhs->variable_referenced();
-      if (var->data.mode == ir_var_shader_out && !var->data.patch) {
+      if (var && var->data.mode == ir_var_shader_out && !var->data.patch) {
          ir_rvalue *index = find_innermost_array_index(lhs);
          ir_variable *index_var = index ? index->variable_referenced() : NULL;
          if (!index_var || strcmp(index_var->name, "gl_InvocationID") != 0) {
@@ -976,7 +977,7 @@ do_assignment(exec_list *instructions, struct _mesa_glsl_parse_state *state,
 
          assert(var != NULL);
 
-         if (var->data.max_array_access >= unsigned(rhs->type->array_size())) {
+         if (var->data.max_array_access >= rhs->type->array_size()) {
             /* FINISHME: This should actually log the location of the RHS. */
             _mesa_glsl_error(& lhs_loc, state, "array size must be > %u due to "
                              "previous access",
@@ -1051,6 +1052,11 @@ bool
 ast_node::has_sequence_subexpression() const
 {
    return false;
+}
+
+void
+ast_node::set_is_lhs(bool /* new_value */)
+{
 }
 
 void
@@ -1271,7 +1277,7 @@ void
 ast_expression::set_is_lhs(bool new_value)
 {
    /* is_lhs is tracked only to print "variable used uninitialized" warnings,
-    * if we lack a identifier we can just skip it.
+    * if we lack an identifier we can just skip it.
     */
    if (this->primary_expression.identifier == NULL)
       return;
@@ -1917,6 +1923,14 @@ ast_expression::do_hir(exec_list *instructions,
       ir_variable *var =
          state->symbols->get_variable(this->primary_expression.identifier);
 
+      if (var == NULL) {
+         /* the identifier might be a subroutine name */
+         char *sub_name;
+         sub_name = ralloc_asprintf(ctx, "%s_%s", _mesa_shader_stage_to_subroutine_prefix(state->stage), this->primary_expression.identifier);
+         var = state->symbols->get_variable(sub_name);
+         ralloc_free(sub_name);
+      }
+
       if (var != NULL) {
          var->data.used = true;
          result = new(ctx) ir_dereference_variable(var);
@@ -2087,7 +2101,7 @@ ast_expression::has_sequence_subexpression() const
       return false;
 
    case ast_aggregate:
-      unreachable("ast_aggregate: Should never get here.");
+      return false;
 
    case ast_function_call:
       unreachable("should be handled by ast_function_expression::hir");
@@ -2265,10 +2279,10 @@ precision_qualifier_allowed(const glsl_type *type)
     * From this, we infer that GLSL 1.30 (and later) should allow precision
     * qualifiers on sampler types just like float and integer types.
     */
-   return (type->is_float()
-       || type->is_integer()
-       || type->contains_opaque())
-       && !type->without_array()->is_record();
+   const glsl_type *const t = type->without_array();
+
+   return (t->is_float() || t->is_integer() || t->contains_opaque()) &&
+          !t->is_record();
 }
 
 const glsl_type *
@@ -2813,7 +2827,7 @@ apply_explicit_binding(struct _mesa_glsl_parse_state *state,
 static void
 validate_interpolation_qualifier(struct _mesa_glsl_parse_state *state,
                                  YYLTYPE *loc,
-                                 const glsl_interp_qualifier interpolation,
+                                 const glsl_interp_mode interpolation,
                                  const struct ast_type_qualifier *qual,
                                  const struct glsl_type *var_type,
                                  ir_variable_mode mode)
@@ -2842,7 +2856,7 @@ validate_interpolation_qualifier(struct _mesa_glsl_parse_state *state,
     *    fragment shader."
     */
    if (state->is_version(130, 300)
-       && interpolation != INTERP_QUALIFIER_NONE) {
+       && interpolation != INTERP_MODE_NONE) {
       const char *i = interpolation_string(interpolation);
       if (mode != ir_var_shader_in && mode != ir_var_shader_out)
          _mesa_glsl_error(loc, state,
@@ -2880,7 +2894,7 @@ validate_interpolation_qualifier(struct _mesa_glsl_parse_state *state,
     * These deprecated storage qualifiers do not exist in GLSL ES 3.00.
     */
    if (state->is_version(130, 0)
-       && interpolation != INTERP_QUALIFIER_NONE
+       && interpolation != INTERP_MODE_NONE
        && qual->flags.q.varying) {
 
       const char *i = interpolation_string(interpolation);
@@ -2926,7 +2940,7 @@ validate_interpolation_qualifier(struct _mesa_glsl_parse_state *state,
     */
    if (state->is_version(130, 300)
        && var_type->contains_integer()
-       && interpolation != INTERP_QUALIFIER_FLAT
+       && interpolation != INTERP_MODE_FLAT
        && ((state->stage == MESA_SHADER_FRAGMENT && mode == ir_var_shader_in)
            || (state->stage == MESA_SHADER_VERTEX && mode == ir_var_shader_out
                && state->es_shader))) {
@@ -2954,10 +2968,9 @@ validate_interpolation_qualifier(struct _mesa_glsl_parse_state *state,
     *
     * The 'double' type does not exist in GLSL ES so far.
     */
-   if ((state->ARB_gpu_shader_fp64_enable
-        || state->is_version(400, 0))
+   if (state->has_double()
        && var_type->contains_double()
-       && interpolation != INTERP_QUALIFIER_FLAT
+       && interpolation != INTERP_MODE_FLAT
        && state->stage == MESA_SHADER_FRAGMENT
        && mode == ir_var_shader_in) {
       _mesa_glsl_error(loc, state, "if a fragment input is (or contains) "
@@ -2965,20 +2978,20 @@ validate_interpolation_qualifier(struct _mesa_glsl_parse_state *state,
    }
 }
 
-static glsl_interp_qualifier
+static glsl_interp_mode
 interpret_interpolation_qualifier(const struct ast_type_qualifier *qual,
                                   const struct glsl_type *var_type,
                                   ir_variable_mode mode,
                                   struct _mesa_glsl_parse_state *state,
                                   YYLTYPE *loc)
 {
-   glsl_interp_qualifier interpolation;
+   glsl_interp_mode interpolation;
    if (qual->flags.q.flat)
-      interpolation = INTERP_QUALIFIER_FLAT;
+      interpolation = INTERP_MODE_FLAT;
    else if (qual->flags.q.noperspective)
-      interpolation = INTERP_QUALIFIER_NOPERSPECTIVE;
+      interpolation = INTERP_MODE_NOPERSPECTIVE;
    else if (qual->flags.q.smooth)
-      interpolation = INTERP_QUALIFIER_SMOOTH;
+      interpolation = INTERP_MODE_SMOOTH;
    else if (state->es_shader &&
             ((mode == ir_var_shader_in &&
               state->stage != MESA_SHADER_VERTEX) ||
@@ -2989,9 +3002,9 @@ interpret_interpolation_qualifier(const struct ast_type_qualifier *qual,
        *    "When no interpolation qualifier is present, smooth interpolation
        *    is used."
        */
-      interpolation = INTERP_QUALIFIER_SMOOTH;
+      interpolation = INTERP_MODE_SMOOTH;
    else
-      interpolation = INTERP_QUALIFIER_NONE;
+      interpolation = INTERP_MODE_NONE;
 
    validate_interpolation_qualifier(state, loc,
                                     interpolation,
@@ -3381,7 +3394,7 @@ apply_layout_qualifier_to_variable(const struct ast_type_qualifier *qual,
                 (qual_component + components - 1) > 3) {
                _mesa_glsl_error(loc, state, "component overflow (%u > 3)",
                                 (qual_component + components - 1));
-            } else if (qual_component == 1 && type->is_double()) {
+            } else if (qual_component == 1 && type->is_64bit()) {
                /* We don't bother checking for 3 as it should be caught by the
                 * overflow check above.
                 */
@@ -3858,7 +3871,7 @@ get_variable_being_redeclared(ir_variable *var, YYLTYPE loc,
        * FINISHME: required or not.
        */
 
-      const unsigned size = unsigned(var->type->array_size());
+      const int size = var->type->array_size();
       check_builtin_array_max_size(var->name, size, loc, state);
       if ((size > 0) && (size <= earlier->data.max_array_access)) {
          _mesa_glsl_error(& loc, state, "array size must be > %u due to "
@@ -4685,6 +4698,14 @@ ast_declarator_list::hir(exec_list *instructions,
       apply_layout_qualifier_to_variable(&this->type->qualifier, var, state,
                                          &loc);
 
+      if ((var->data.mode == ir_var_auto || var->data.mode == ir_var_temporary)
+          && (var->type->is_numeric() || var->type->is_boolean())
+          && state->zero_init) {
+         const ir_constant_data data = {0};
+         var->data.has_initializer = true;
+         var->constant_initializer = new(var) ir_constant(var->type, &data);
+      }
+
       if (this->type->qualifier.flags.q.invariant) {
          if (!is_varying_var(var, state->stage)) {
             _mesa_glsl_error(&loc, state,
@@ -4982,13 +5003,8 @@ ast_declarator_list::hir(exec_list *instructions,
          state->check_precision_qualifiers_allowed(&loc);
       }
 
-
-      /* If a precision qualifier is allowed on a type, it is allowed on
-       * an array of that type.
-       */
-      if (!(this->type->qualifier.precision == ast_precision_none
-          || precision_qualifier_allowed(var->type->without_array()))) {
-
+      if (this->type->qualifier.precision != ast_precision_none &&
+          !precision_qualifier_allowed(var->type)) {
          _mesa_glsl_error(&loc, state,
                           "precision qualifiers apply only to floating point"
                           ", integer and opaque types");
@@ -5388,6 +5404,15 @@ ast_function::hir(exec_list *instructions,
                        name);
    }
 
+   /**/
+   if (return_type->is_subroutine()) {
+      YYLTYPE loc = this->get_location();
+      _mesa_glsl_error(&loc, state,
+                       "function `%s' return type can't be a subroutine type",
+                       name);
+   }
+
+
    /* Create an ir_function if one doesn't already exist. */
    f = state->symbols->get_function(name);
    if (f == NULL) {
@@ -5521,6 +5546,24 @@ ast_function::hir(exec_list *instructions,
          type = state->symbols->get_type(decl->identifier);
          if (!type) {
             _mesa_glsl_error(& loc, state, "unknown type '%s' in subroutine function definition", decl->identifier);
+         }
+
+         for (int i = 0; i < state->num_subroutine_types; i++) {
+            ir_function *fn = state->subroutine_types[i];
+            ir_function_signature *tsig = NULL;
+
+            if (strcmp(fn->name, decl->identifier))
+               continue;
+
+            tsig = fn->matching_signature(state, &sig->parameters,
+                                          false);
+            if (!tsig) {
+               _mesa_glsl_error(& loc, state, "subroutine type mismatch '%s' - signatures do not match\n", decl->identifier);
+            } else {
+               if (tsig->return_type != sig->return_type) {
+                  _mesa_glsl_error(& loc, state, "subroutine type mismatch '%s' - return types do not match\n", decl->identifier);
+               }
+            }
          }
          f->subroutine_types[idx++] = type;
       }
@@ -6630,7 +6673,7 @@ ast_process_struct_or_iface_block_members(exec_list *instructions,
          xfb_buffer = (int) qual_xfb_buffer;
       } else {
          if (layout)
-            explicit_xfb_buffer = layout->flags.q.xfb_buffer;
+            explicit_xfb_buffer = layout->flags.q.explicit_xfb_buffer;
          xfb_buffer = (int) block_xfb_buffer;
       }
 
@@ -6780,9 +6823,7 @@ ast_process_struct_or_iface_block_members(exec_list *instructions,
                fields[i].offset = glsl_align(offset, expl_align);
                next_offset = glsl_align(fields[i].offset + size, align);
             }
-         }
-
-         if (!qual->flags.q.explicit_offset) {
+         } else if (!qual->flags.q.explicit_offset) {
             if (align != 0 && size != 0)
                next_offset = glsl_align(next_offset + size, align);
          }
@@ -6806,7 +6847,7 @@ ast_process_struct_or_iface_block_members(exec_list *instructions,
             }
          } else {
             if (layout && layout->flags.q.explicit_xfb_offset) {
-               unsigned align = field_type->is_double() ? 8 : 4;
+               unsigned align = field_type->is_64bit() ? 8 : 4;
                fields[i].offset = glsl_align(block_xfb_offset, align);
                block_xfb_offset +=
                   MAX2(xfb_stride, (int) (4 * field_type->component_slots()));
@@ -6818,7 +6859,7 @@ ast_process_struct_or_iface_block_members(exec_list *instructions,
           * the structure may contain a structure that contains ... a matrix
           * that need the proper layout.
           */
-         if (is_interface &&
+         if (is_interface && layout &&
              (layout->flags.q.uniform || layout->flags.q.buffer) &&
              (field_type->without_array()->is_matrix()
               || field_type->without_array()->is_record())) {
@@ -6918,7 +6959,12 @@ ast_struct_specifier::hir(exec_list *instructions,
       glsl_type::get_record_instance(fields, decl_count, this->name);
 
    if (!state->symbols->add_type(name, t)) {
-      _mesa_glsl_error(& loc, state, "struct `%s' previously defined", name);
+      const glsl_type *match = state->symbols->get_type(name);
+      /* allow struct matching for desktop GL - older UE4 does this */
+      if (match != NULL && state->is_version(130, 0) && match->record_compare(t, false))
+         _mesa_glsl_warning(& loc, state, "struct `%s' previously defined", name);
+      else
+         _mesa_glsl_error(& loc, state, "struct `%s' previously defined", name);
    } else {
       const glsl_type **s = reralloc(state, state->user_structures,
                                      const glsl_type *,
@@ -7453,31 +7499,6 @@ ast_interface_block::hir(exec_list *instructions,
          handle_tess_ctrl_shader_output_decl(state, loc, var);
 
       for (unsigned i = 0; i < num_variables; i++) {
-         if (fields[i].type->is_unsized_array()) {
-            if (var_mode == ir_var_shader_storage) {
-               if (i != (num_variables - 1)) {
-                  _mesa_glsl_error(&loc, state, "unsized array `%s' definition: "
-                                   "only last member of a shader storage block "
-                                   "can be defined as unsized array",
-                                   fields[i].name);
-               }
-            } else {
-               /* From GLSL ES 3.10 spec, section 4.1.9 "Arrays":
-               *
-               * "If an array is declared as the last member of a shader storage
-               * block and the size is not specified at compile-time, it is
-               * sized at run-time. In all other cases, arrays are sized only
-               * at compile-time."
-               */
-               if (state->es_shader) {
-                  _mesa_glsl_error(&loc, state, "unsized array `%s' definition: "
-                                 "only last member of a shader storage block "
-                                 "can be defined as unsized array",
-                                 fields[i].name);
-               }
-            }
-         }
-
          if (var->data.mode == ir_var_shader_storage)
             apply_memory_qualifiers(var, fields[i]);
       }
@@ -7593,26 +7614,22 @@ ast_interface_block::hir(exec_list *instructions,
 
          if (var->type->is_unsized_array()) {
             if (var->is_in_shader_storage_block()) {
-               if (!is_unsized_array_last_element(var)) {
-                  _mesa_glsl_error(&loc, state, "unsized array `%s' definition: "
-                                   "only last member of a shader storage block "
-                                   "can be defined as unsized array",
-                                   var->name);
+               if (is_unsized_array_last_element(var)) {
+                  var->data.from_ssbo_unsized_array = true;
                }
-               var->data.from_ssbo_unsized_array = true;
             } else {
                /* From GLSL ES 3.10 spec, section 4.1.9 "Arrays":
-               *
-               * "If an array is declared as the last member of a shader storage
-               * block and the size is not specified at compile-time, it is
-               * sized at run-time. In all other cases, arrays are sized only
-               * at compile-time."
-               */
+                *
+                * "If an array is declared as the last member of a shader storage
+                * block and the size is not specified at compile-time, it is
+                * sized at run-time. In all other cases, arrays are sized only
+                * at compile-time."
+                */
                if (state->es_shader) {
-                  _mesa_glsl_error(&loc, state, "unsized array `%s' definition: "
-                                 "only last member of a shader storage block "
-                                 "can be defined as unsized array",
-                                 var->name);
+                  _mesa_glsl_error(&loc, state, "unsized array `%s' "
+                                   "definition: only last member of a shader "
+                                   "storage block can be defined as unsized "
+                                   "array", fields[i].name);
                }
             }
          }
@@ -7706,7 +7723,7 @@ ast_tcs_output_layout::hir(exec_list *instructions,
       if (!var->type->is_unsized_array() || var->data.patch)
          continue;
 
-      if (var->data.max_array_access >= num_vertices) {
+      if (var->data.max_array_access >= (int)num_vertices) {
 	 _mesa_glsl_error(&loc, state,
 			  "this tessellation control shader output layout "
 			  "specifies %u vertices, but an access to element "
@@ -7767,7 +7784,7 @@ ast_gs_input_layout::hir(exec_list *instructions,
        */
 
       if (var->type->is_unsized_array()) {
-         if (var->data.max_array_access >= num_vertices) {
+         if (var->data.max_array_access >= (int)num_vertices) {
             _mesa_glsl_error(&loc, state,
                              "this geometry shader input layout implies %u"
                              " vertices, but an access to element %u of input"

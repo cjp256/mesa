@@ -538,6 +538,14 @@ fs_visitor::try_constant_propagate(fs_inst *inst, acp_entry *entry)
                                entry->dst, entry->regs_written))
          continue;
 
+      /* If the type sizes don't match each channel of the instruction is
+       * either extracting a portion of the constant (which could be handled
+       * with some effort but the code below doesn't) or reading multiple
+       * channels of the source at once.
+       */
+      if (type_sz(inst->src[i].type) != type_sz(entry->dst.type))
+         continue;
+
       fs_reg val = entry->src;
       val.type = inst->src[i].type;
 
@@ -570,11 +578,9 @@ fs_visitor::try_constant_propagate(fs_inst *inst, acp_entry *entry)
             break;
          /* fallthrough */
       case SHADER_OPCODE_POW:
-         /* Allow constant propagation into src1 (except on Gen 6), and let
-          * constant combining promote the constant on Gen < 8.
-          *
-          * While Gen 6 MATH can take a scalar source, its source and
-          * destination offsets must be equal and we cannot ensure that.
+         /* Allow constant propagation into src1 (except on Gen 6 which
+          * doesn't support scalar source math), and let constant combining
+          * promote the constant on Gen < 8.
           */
          if (devinfo->gen == 6)
             break;
@@ -680,6 +686,40 @@ fs_visitor::try_constant_propagate(fs_inst *inst, acp_entry *entry)
          }
          break;
 
+      case FS_OPCODE_FB_WRITE_LOGICAL:
+         /* The stencil and omask sources of FS_OPCODE_FB_WRITE_LOGICAL are
+          * bit-cast using a strided region so they cannot be immediates.
+          */
+         if (i != FB_WRITE_LOGICAL_SRC_SRC_STENCIL &&
+             i != FB_WRITE_LOGICAL_SRC_OMASK) {
+            inst->src[i] = val;
+            progress = true;
+         }
+         break;
+
+      case SHADER_OPCODE_TEX_LOGICAL:
+      case SHADER_OPCODE_TXD_LOGICAL:
+      case SHADER_OPCODE_TXF_LOGICAL:
+      case SHADER_OPCODE_TXL_LOGICAL:
+      case SHADER_OPCODE_TXS_LOGICAL:
+      case FS_OPCODE_TXB_LOGICAL:
+      case SHADER_OPCODE_TXF_CMS_LOGICAL:
+      case SHADER_OPCODE_TXF_CMS_W_LOGICAL:
+      case SHADER_OPCODE_TXF_UMS_LOGICAL:
+      case SHADER_OPCODE_TXF_MCS_LOGICAL:
+      case SHADER_OPCODE_LOD_LOGICAL:
+      case SHADER_OPCODE_TG4_LOGICAL:
+      case SHADER_OPCODE_TG4_OFFSET_LOGICAL:
+      case SHADER_OPCODE_UNTYPED_ATOMIC_LOGICAL:
+      case SHADER_OPCODE_UNTYPED_SURFACE_READ_LOGICAL:
+      case SHADER_OPCODE_UNTYPED_SURFACE_WRITE_LOGICAL:
+      case SHADER_OPCODE_TYPED_ATOMIC_LOGICAL:
+      case SHADER_OPCODE_TYPED_SURFACE_READ_LOGICAL:
+      case SHADER_OPCODE_TYPED_SURFACE_WRITE_LOGICAL:
+         inst->src[i] = val;
+         progress = true;
+         break;
+
       case FS_OPCODE_UNIFORM_PULL_CONSTANT_LOAD:
       case SHADER_OPCODE_BROADCAST:
          inst->src[i] = val;
@@ -715,14 +755,6 @@ can_propagate_from(fs_inst *inst)
            !inst->is_partial_write());
 }
 
-inline bool
-regions_overlap(const fs_reg &r, unsigned n, const fs_reg &s, unsigned m)
-{
-   return r.file == s.file && r.nr == s.nr &&
-      !(r.reg_offset + n < s.reg_offset ||
-        s.reg_offset + m < r.reg_offset);
-}
-
 /* Walks a basic block and does copy propagation on it using the acp
  * list.
  */
@@ -749,11 +781,9 @@ fs_visitor::opt_copy_propagate_local(void *copy_prop_ctx, bblock_t *block,
       /* kill the destination from the ACP */
       if (inst->dst.file == VGRF) {
          foreach_in_list_safe(acp_entry, entry, &acp[inst->dst.nr % ACP_HASH_SIZE]) {
-            if (regions_overlap(entry->dst, entry->regs_written,
-                                inst->dst, inst->regs_written)) {
+            if (regions_overlap(entry->dst, entry->regs_written * REG_SIZE,
+                                inst->dst, inst->regs_written * REG_SIZE))
                entry->remove();
-               break;
-            }
          }
 
          /* Oops, we only have the chaining hash based on the destination, not
@@ -764,11 +794,9 @@ fs_visitor::opt_copy_propagate_local(void *copy_prop_ctx, bblock_t *block,
                /* Make sure we kill the entry if this instruction overwrites
                 * _any_ of the registers that it reads
                 */
-               if (regions_overlap(entry->src, entry->regs_read,
-                                   inst->dst, inst->regs_written)) {
+               if (regions_overlap(entry->src, entry->regs_read * REG_SIZE,
+                                   inst->dst, inst->regs_written * REG_SIZE))
                   entry->remove();
-                  continue;
-               }
             }
 	 }
       }

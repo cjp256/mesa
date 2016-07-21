@@ -334,7 +334,7 @@ nir_instrs_equal(const nir_instr *instr1, const nir_instr *instr2)
          return false;
 
       return memcmp(load1->value.f32, load2->value.f32,
-                    load1->def.num_components * (load1->def.bit_size / 8)) == 0;
+                    load1->def.num_components * (load1->def.bit_size / 8u)) == 0;
    }
    case nir_instr_type_phi: {
       nir_phi_instr *phi1 = nir_instr_as_phi(instr1);
@@ -514,7 +514,7 @@ nir_instr_set_add_or_rewrite(struct set *instr_set, nir_instr *instr)
       nir_instr *match = (nir_instr *) entry->key;
       nir_ssa_def *new_def = nir_instr_get_dest_ssa_def(match);
 
-      /* It's safe to replace a exact instruction with an inexact one as
+      /* It's safe to replace an exact instruction with an inexact one as
        * long as we make it exact.  If we got here, the two instructions are
        * exactly identical in every other way so, once we've set the exact
        * bit, they are the same.

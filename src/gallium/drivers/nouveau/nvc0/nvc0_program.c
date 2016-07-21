@@ -80,6 +80,7 @@ nvc0_shader_output_address(unsigned sn, unsigned si)
    case TGSI_SEMANTIC_CLIPDIST:      return 0x2c0 + si * 0x10;
    case TGSI_SEMANTIC_CLIPVERTEX:    return 0x270;
    case TGSI_SEMANTIC_TEXCOORD:      return 0x300 + si * 0x10;
+   /* case TGSI_SEMANTIC_VIEWPORT_MASK: return 0x3a0; */
    case TGSI_SEMANTIC_EDGEFLAG:      return ~0;
    default:
       assert(!"invalid TGSI output semantic");
@@ -294,11 +295,21 @@ nvc0_tp_get_tess_mode(struct nvc0_program *tp, struct nv50_ir_prog_info *info)
       return;
    }
 
-   if (info->prop.tp.winding > 0)
-      tp->tp.tess_mode |= NVC0_3D_TESS_MODE_CW;
+   /* It seems like lines want the "CW" bit to indicate they're connected, and
+    * spit out errors in dmesg when the "CONNECTED" bit is set.
+    */
+   if (info->prop.tp.outputPrim != PIPE_PRIM_POINTS) {
+      if (info->prop.tp.domain == PIPE_PRIM_LINES)
+         tp->tp.tess_mode |= NVC0_3D_TESS_MODE_CW;
+      else
+         tp->tp.tess_mode |= NVC0_3D_TESS_MODE_CONNECTED;
+   }
 
-   if (info->prop.tp.outputPrim != PIPE_PRIM_POINTS)
-      tp->tp.tess_mode |= NVC0_3D_TESS_MODE_CONNECTED;
+   /* Winding only matters for triangles/quads, not lines. */
+   if (info->prop.tp.domain != PIPE_PRIM_LINES &&
+       info->prop.tp.outputPrim != PIPE_PRIM_POINTS &&
+       info->prop.tp.winding > 0)
+      tp->tp.tess_mode |= NVC0_3D_TESS_MODE_CW;
 
    switch (info->prop.tp.partitioning) {
    case PIPE_TESS_SPACING_EQUAL:
@@ -382,7 +393,7 @@ nvc0_gp_gen_header(struct nvc0_program *gp, struct nv50_ir_prog_info *info)
       break;
    }
 
-   gp->hdr[4] = MIN2(info->prop.gp.maxVertices, 1024);
+   gp->hdr[4] = CLAMP(info->prop.gp.maxVertices, 1, 1024);
 
    return nvc0_vtgp_gen_header(gp, info);
 }
@@ -544,33 +555,25 @@ nvc0_program_translate(struct nvc0_program *prog, uint16_t chipset,
 
    info->io.genUserClip = prog->vp.num_ucps;
    info->io.auxCBSlot = 15;
+   info->io.msInfoCBSlot = 15;
    info->io.ucpBase = NVC0_CB_AUX_UCP_INFO;
    info->io.drawInfoBase = NVC0_CB_AUX_DRAW_INFO;
+   info->io.msInfoBase = NVC0_CB_AUX_MS_INFO;
+   info->io.bufInfoBase = NVC0_CB_AUX_BUF_INFO(0);
+   info->io.suInfoBase = NVC0_CB_AUX_SU_INFO(0);
+   if (chipset >= NVISA_GK104_CHIPSET) {
+      info->io.texBindBase = NVC0_CB_AUX_TEX_INFO(0);
+   }
 
    if (prog->type == PIPE_SHADER_COMPUTE) {
       if (chipset >= NVISA_GK104_CHIPSET) {
          info->io.auxCBSlot = 7;
-         info->io.texBindBase = NVC0_CB_AUX_TEX_INFO(0);
-         info->prop.cp.gridInfoBase = NVC0_CB_AUX_GRID_INFO;
+         info->io.msInfoCBSlot = 7;
          info->io.uboInfoBase = NVC0_CB_AUX_UBO_INFO(0);
-         info->io.suInfoBase = NVC0_CB_AUX_SU_INFO(0);
-      } else {
-         info->io.suInfoBase = 0; /* TODO */
       }
-      info->io.msInfoCBSlot = 0;
-      info->io.msInfoBase = NVC0_CB_AUX_MS_INFO;
-      info->io.bufInfoBase = NVC0_CB_AUX_BUF_INFO(0);
+      info->prop.cp.gridInfoBase = NVC0_CB_AUX_GRID_INFO(0);
    } else {
-      if (chipset >= NVISA_GK104_CHIPSET) {
-         info->io.texBindBase = NVC0_CB_AUX_TEX_INFO(0);
-         info->io.suInfoBase = NVC0_CB_AUX_SU_INFO(0);
-      } else {
-         info->io.suInfoBase = 0; /* TODO */
-      }
       info->io.sampleInfoBase = NVC0_CB_AUX_SAMPLE_INFO;
-      info->io.bufInfoBase = NVC0_CB_AUX_BUF_INFO(0);
-      info->io.msInfoCBSlot = 15;
-      info->io.msInfoBase = 0; /* TODO */
    }
 
    info->assignSlots = nvc0_program_assign_varying_slots;
@@ -745,7 +748,8 @@ nvc0_program_upload_code(struct nvc0_context *nvc0, struct nvc0_program *prog)
    if (prog->fixups) {
       nv50_ir_apply_fixups(prog->fixups, prog->code,
                            prog->fp.force_persample_interp,
-                           prog->fp.flatshade);
+                           prog->fp.flatshade,
+                           0 /* alphatest */);
       for (int i = 0; i < 2; i++) {
          unsigned mask = prog->fp.color_interp[i] >> 4;
          unsigned interp = prog->fp.color_interp[i] & 3;

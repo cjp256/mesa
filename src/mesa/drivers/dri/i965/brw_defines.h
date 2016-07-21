@@ -247,7 +247,7 @@
  * Chipset Graphics Controller Programmer's Reference Manual,
  * Volume 2: 3D/Media", Revision 1.0b as of January 2008,
  * available at
- *     http://intellinuxgraphics.org/documentation.html
+ *     https://01.org/linuxgraphics/documentation/hardware-specification-prms
  * at the time of this writing).
  *
  * These appear to be supported on at least some
@@ -857,7 +857,7 @@ enum opcode {
    BRW_OPCODE_XOR =	7,
    BRW_OPCODE_SHR =	8,
    BRW_OPCODE_SHL =	9,
-   // BRW_OPCODE_DIM =	10,  /**< Gen7.5 only */ /* Reused */
+   BRW_OPCODE_DIM =	10,  /**< Gen7.5 only */ /* Reused */
    // BRW_OPCODE_SMOV =	10,  /**< Gen8+       */ /* Reused */
    /* Reserved - 11 */
    BRW_OPCODE_ASR =	12,
@@ -951,7 +951,6 @@ enum opcode {
    FS_OPCODE_FB_WRITE_LOGICAL,
 
    FS_OPCODE_REP_FB_WRITE,
-   FS_OPCODE_PACK_STENCIL_REF,
    SHADER_OPCODE_RCP,
    SHADER_OPCODE_RSQ,
    SHADER_OPCODE_SQRT,
@@ -977,8 +976,10 @@ enum opcode {
    SHADER_OPCODE_TXD_LOGICAL,
    SHADER_OPCODE_TXF,
    SHADER_OPCODE_TXF_LOGICAL,
+   SHADER_OPCODE_TXF_LZ,
    SHADER_OPCODE_TXL,
    SHADER_OPCODE_TXL_LOGICAL,
+   SHADER_OPCODE_TXL_LZ,
    SHADER_OPCODE_TXS,
    SHADER_OPCODE_TXS_LOGICAL,
    FS_OPCODE_TXB,
@@ -998,6 +999,7 @@ enum opcode {
    SHADER_OPCODE_TG4_OFFSET,
    SHADER_OPCODE_TG4_OFFSET_LOGICAL,
    SHADER_OPCODE_SAMPLEINFO,
+   SHADER_OPCODE_SAMPLEINFO_LOGICAL,
 
    /**
     * Combines multiple sources of size 1 into a larger virtual GRF.
@@ -1080,20 +1082,14 @@ enum opcode {
    /**
     * Pick the channel from its first source register given by the index
     * specified as second source.  Useful for variable indexing of surfaces.
+    *
+    * Note that because the result of this instruction is by definition
+    * uniform and it can always be splatted to multiple channels using a
+    * scalar regioning mode, only the first channel of the destination region
+    * is guaranteed to be updated, which implies that BROADCAST instructions
+    * should usually be marked force_writemask_all.
     */
    SHADER_OPCODE_BROADCAST,
-
-   /**
-    * Pick the byte from its first source register given by the index
-    * specified as second source.
-    */
-   SHADER_OPCODE_EXTRACT_BYTE,
-
-   /**
-    * Pick the word from its first source register given by the index
-    * specified as second source.
-    */
-   SHADER_OPCODE_EXTRACT_WORD,
 
    VEC4_OPCODE_MOV_BYTES,
    VEC4_OPCODE_PACK_BYTES,
@@ -1103,7 +1099,6 @@ enum opcode {
    FS_OPCODE_DDX_FINE,
    /**
     * Compute dFdy(), dFdyCoarse(), or dFdyFine().
-    * src1 is an immediate storing the key->render_to_fbo boolean.
     */
    FS_OPCODE_DDY_COARSE,
    FS_OPCODE_DDY_FINE,
@@ -1113,8 +1108,9 @@ enum opcode {
    FS_OPCODE_PIXEL_Y,
    FS_OPCODE_UNIFORM_PULL_CONSTANT_LOAD,
    FS_OPCODE_UNIFORM_PULL_CONSTANT_LOAD_GEN7,
-   FS_OPCODE_VARYING_PULL_CONSTANT_LOAD,
+   FS_OPCODE_VARYING_PULL_CONSTANT_LOAD_GEN4,
    FS_OPCODE_VARYING_PULL_CONSTANT_LOAD_GEN7,
+   FS_OPCODE_VARYING_PULL_CONSTANT_LOAD_LOGICAL,
    FS_OPCODE_GET_BUFFER_SIZE,
    FS_OPCODE_MOV_DISPATCH_TO_FLAGS,
    FS_OPCODE_DISCARD_JUMP,
@@ -1124,7 +1120,6 @@ enum opcode {
    FS_OPCODE_UNPACK_HALF_2x16_SPLIT_X,
    FS_OPCODE_UNPACK_HALF_2x16_SPLIT_Y,
    FS_OPCODE_PLACEHOLDER_HALT,
-   FS_OPCODE_INTERPOLATE_AT_CENTROID,
    FS_OPCODE_INTERPOLATE_AT_SAMPLE,
    FS_OPCODE_INTERPOLATE_AT_SHARED_OFFSET,
    FS_OPCODE_INTERPOLATE_AT_PER_SLOT_OFFSET,
@@ -1400,6 +1395,7 @@ enum fb_write_logical_srcs {
    FB_WRITE_LOGICAL_SRC_SRC_STENCIL, /* gl_FragStencilRefARB */
    FB_WRITE_LOGICAL_SRC_OMASK,       /* Sample Mask (gl_SampleMask) */
    FB_WRITE_LOGICAL_SRC_COMPONENTS,  /* REQUIRED */
+   FB_WRITE_LOGICAL_NUM_SRCS
 };
 
 enum tex_logical_srcs {
@@ -1645,6 +1641,9 @@ enum brw_message_target {
 #define GEN7_SAMPLER_MESSAGE_SAMPLE_GATHER4_PO   17
 #define GEN7_SAMPLER_MESSAGE_SAMPLE_GATHER4_PO_C 18
 #define HSW_SAMPLER_MESSAGE_SAMPLE_DERIV_COMPARE 20
+#define GEN9_SAMPLER_MESSAGE_SAMPLE_LZ           24
+#define GEN9_SAMPLER_MESSAGE_SAMPLE_C_LZ         25
+#define GEN9_SAMPLER_MESSAGE_SAMPLE_LD_LZ        26
 #define GEN9_SAMPLER_MESSAGE_SAMPLE_LD2DMS_W     28
 #define GEN7_SAMPLER_MESSAGE_SAMPLE_LD_MCS       29
 #define GEN7_SAMPLER_MESSAGE_SAMPLE_LD2DMS       30
@@ -2533,19 +2532,19 @@ enum brw_pixel_shader_coverage_mask_mode {
 # define GEN8_PSX_SHADER_USES_INPUT_COVERAGE_MASK       (1 << 1)
 # define GEN9_PSX_SHADER_NORMAL_COVERAGE_MASK_SHIFT     0
 
-enum brw_wm_barycentric_interp_mode {
-   BRW_WM_PERSPECTIVE_PIXEL_BARYCENTRIC		= 0,
-   BRW_WM_PERSPECTIVE_CENTROID_BARYCENTRIC	= 1,
-   BRW_WM_PERSPECTIVE_SAMPLE_BARYCENTRIC	= 2,
-   BRW_WM_NONPERSPECTIVE_PIXEL_BARYCENTRIC	= 3,
-   BRW_WM_NONPERSPECTIVE_CENTROID_BARYCENTRIC	= 4,
-   BRW_WM_NONPERSPECTIVE_SAMPLE_BARYCENTRIC	= 5,
-   BRW_WM_BARYCENTRIC_INTERP_MODE_COUNT  = 6
+enum brw_barycentric_mode {
+   BRW_BARYCENTRIC_PERSPECTIVE_PIXEL       = 0,
+   BRW_BARYCENTRIC_PERSPECTIVE_CENTROID    = 1,
+   BRW_BARYCENTRIC_PERSPECTIVE_SAMPLE      = 2,
+   BRW_BARYCENTRIC_NONPERSPECTIVE_PIXEL    = 3,
+   BRW_BARYCENTRIC_NONPERSPECTIVE_CENTROID = 4,
+   BRW_BARYCENTRIC_NONPERSPECTIVE_SAMPLE   = 5,
+   BRW_BARYCENTRIC_MODE_COUNT              = 6
 };
-#define BRW_WM_NONPERSPECTIVE_BARYCENTRIC_BITS \
-   ((1 << BRW_WM_NONPERSPECTIVE_PIXEL_BARYCENTRIC) | \
-    (1 << BRW_WM_NONPERSPECTIVE_CENTROID_BARYCENTRIC) | \
-    (1 << BRW_WM_NONPERSPECTIVE_SAMPLE_BARYCENTRIC))
+#define BRW_BARYCENTRIC_NONPERSPECTIVE_BITS \
+   ((1 << BRW_BARYCENTRIC_NONPERSPECTIVE_PIXEL) | \
+    (1 << BRW_BARYCENTRIC_NONPERSPECTIVE_CENTROID) | \
+    (1 << BRW_BARYCENTRIC_NONPERSPECTIVE_SAMPLE))
 
 #define _3DSTATE_WM				0x7814 /* GEN6+ */
 /* DW1: kernel pointer */
@@ -2943,6 +2942,9 @@ enum brw_wm_barycentric_interp_mode {
 # define MEDIA_GPGPU_THREAD_COUNT_MASK          INTEL_MASK(7, 0)
 # define GEN8_MEDIA_GPGPU_THREAD_COUNT_SHIFT    0
 # define GEN8_MEDIA_GPGPU_THREAD_COUNT_MASK     INTEL_MASK(9, 0)
+/* GEN7 DW6, GEN8+ DW7 */
+# define CROSS_THREAD_READ_LENGTH_SHIFT         0
+# define CROSS_THREAD_READ_LENGTH_MASK          INTEL_MASK(7, 0)
 #define MEDIA_STATE_FLUSH                       0x7004
 #define GPGPU_WALKER                            0x7105
 /* GEN7 DW0 */

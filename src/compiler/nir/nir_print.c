@@ -53,7 +53,29 @@ typedef struct {
 
    /* an index used to make new non-conflicting names */
    unsigned index;
+
+   /**
+    * Optional table of annotations mapping nir object
+    * (such as instr or var) to message to print.
+    */
+   struct hash_table *annotations;
 } print_state;
+
+static void
+print_annotation(print_state *state, void *obj)
+{
+   if (!state->annotations)
+      return;
+
+   struct hash_entry *entry = _mesa_hash_table_search(state->annotations, obj);
+   if (!entry)
+      return;
+
+   const char *note = entry->data;
+   _mesa_hash_table_remove(state->annotations, entry);
+
+   fprintf(stderr, "%s\n\n", note);
+}
 
 static void
 print_register(nir_register *reg, print_state *state)
@@ -352,7 +374,7 @@ print_var_decl(nir_variable *var, print_state *state)
    const char *const inv = (var->data.invariant) ? "invariant " : "";
    fprintf(fp, "%s%s%s%s%s %s ",
            cent, samp, patch, inv, get_variable_mode_str(var->data.mode),
-           glsl_interp_qualifier_name(var->data.interpolation));
+           glsl_interp_mode_name(var->data.interpolation));
 
    const char *const coher = (var->data.image.coherent) ? "coherent " : "";
    const char *const volat = (var->data.image._volatile) ? "volatile " : "";
@@ -413,6 +435,7 @@ print_var_decl(nir_variable *var, print_state *state)
    }
 
    fprintf(fp, "\n");
+   print_annotation(state, var);
 }
 
 static void
@@ -547,6 +570,8 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
       [NIR_INTRINSIC_RANGE] = "range",
       [NIR_INTRINSIC_DESC_SET] = "desc-set",
       [NIR_INTRINSIC_BINDING] = "binding",
+      [NIR_INTRINSIC_COMPONENT] = "component",
+      [NIR_INTRINSIC_INTERP_MODE] = "interp_mode",
    };
    for (unsigned idx = 1; idx < NIR_INTRINSIC_NUM_INDEX_FLAGS; idx++) {
       if (!info->index_map[idx])
@@ -591,6 +616,8 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
 
    nir_foreach_variable(var, var_list) {
       if ((var->data.driver_location == nir_intrinsic_base(instr)) &&
+          (instr->intrinsic == nir_intrinsic_load_uniform ||
+           var->data.location_frac == nir_intrinsic_component(instr)) &&
           var->name) {
          fprintf(fp, "\t/* %s */", var->name);
          break;
@@ -693,6 +720,9 @@ print_tex_instr(nir_tex_instr *instr, print_state *state)
          break;
       case nir_tex_src_sampler_offset:
          fprintf(fp, "(sampler_offset)");
+         break;
+      case nir_tex_src_plane:
+         fprintf(fp, "(plane)");
          break;
 
       default:
@@ -924,6 +954,7 @@ print_block(nir_block *block, print_state *state, unsigned tabs)
    nir_foreach_instr(instr, block) {
       print_instr(instr, state, tabs);
       fprintf(fp, "\n");
+      print_annotation(state, instr);
    }
 
    print_tabs(tabs, fp);
@@ -1096,10 +1127,13 @@ destroy_print_state(print_state *state)
 }
 
 void
-nir_print_shader(nir_shader *shader, FILE *fp)
+nir_print_shader_annotated(nir_shader *shader, FILE *fp,
+                           struct hash_table *annotations)
 {
    print_state state;
    init_print_state(&state, shader, fp);
+
+   state.annotations = annotations;
 
    fprintf(fp, "shader: %s\n", gl_shader_stage_name(shader->stage));
 
@@ -1147,6 +1181,12 @@ nir_print_shader(nir_shader *shader, FILE *fp)
    }
 
    destroy_print_state(&state);
+}
+
+void
+nir_print_shader(nir_shader *shader, FILE *fp)
+{
+   nir_print_shader_annotated(shader, fp, NULL);
 }
 
 void

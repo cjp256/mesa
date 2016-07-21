@@ -92,8 +92,8 @@ Chad Versace <chad.versace@intel.com> <chad@chad-versace.us>
 Chad Versace <chad.versace@intel.com> <Chad Versace chad@chad-versace.us>
 Chad Versace <chad.versace@intel.com> <chad.versace@linux.intel.com>
 
-Chia-I Wu <olv@lunarg.com> <olvaffe@gmail.com>
-Chia-I Wu <olv@lunarg.com> Chia-Wu <olvaffe@gmail.com>
+Chia-I Wu <olvaffe@gmail.com> <olv@lunarg.com>
+Chia-I Wu <olvaffe@gmail.com> Chia-Wu <olvaffe@gmail.com>
 
 Chih-Wei Huang <cwhuang@linux.org.tw> Chih-Wei Huang <cwhuang@android-x86.org>
 
@@ -138,9 +138,11 @@ Dmitry Cherkassov <dcherkassov@gmail.com> Dmitry Cherkasov <dcherkassov@gmail.co
 
 Dylan Baker <dylanx.c.baker@intel.com> <baker.dylan.c@gmail.com>
 
+Edward O'Callaghan <funfunctor@folklore1984.net> <eocallaghan@alterapraxis.com>
+
 Emeric Grange <emeric.grange@gmail.com> Emeric <emeric.grange@gmail.com>
 
-Emil Velikov <emil.velikov@collabora.com> <emil.l.velikov@gmail.com>
+Emil Velikov <emil.l.velikov@gmail.com> <emil.velikov@collabora.com>
 
 Eric Anholt <eric@anholt.net> Eric Anholt <anholt@FreeBSD.org>
 
@@ -168,12 +170,11 @@ Hui Qi Tay <hqtay@vmware.com> <tayhuiqithq@gmail.com>
 Ian Romanick <ian.d.romanick@intel.com> <idr@freedesktop.org>
 Ian Romanick <ian.d.romanick@intel.com> <idr@us.ibm.com>
 
-Jakob Bornecrantz <jakob@vmware.com> <jakob@vmware.com>
-Jakob Bornecrantz <jakob@vmware.com> <jakob@aurora.(none)>
-Jakob Bornecrantz <jakob@vmware.com> <jakob@aurora.walkyrie.se>
-Jakob Bornecrantz <jakob@vmware.com> <jakob@tungstengraphics.com>
-Jakob Bornecrantz <jakob@vmware.com> <wallbraker 'at' gmail 'dot' com>
-Jakob Bornecrantz <jakob@vmware.com> <wallbraker@gmail.com>
+Jakob Bornecrantz <wallbraker@gmail.com> <jakob@vmware.com>
+Jakob Bornecrantz <wallbraker@gmail.com> <jakob@aurora.(none)>
+Jakob Bornecrantz <wallbraker@gmail.com> <jakob@aurora.walkyrie.se>
+Jakob Bornecrantz <wallbraker@gmail.com> <jakob@tungstengraphics.com>
+Jakob Bornecrantz <wallbraker@gmail.com> <wallbraker 'at' gmail 'dot' com>
 
 Jakub Bogusz <qboosh@pld-linux.org> <gboosh@pld-linux.org>
 
@@ -275,7 +276,7 @@ Marc Dietrich <marvin24@gmx.de> marvin24 <marvin24@gmx.de>
 
 Marcin Ślusarz <marcin.slusarz@gmail.com> Marcin Slusarz <marcin.slusarz@gmail.com>
 
-Marek Olšák <marek.olsak@amd.com> <maraeo@gmail.com>
+Marek Olšák <maraeo@gmail.com> <marek.olsak@amd.com>
 
 Mario Kleiner <mario.kleiner.de@gmail.com> kleinerm <mario.kleiner@tuebingen.mpg.de>
 Mario Kleiner <mario.kleiner.de@gmail.com> <mario.kleiner@tuebingen.mpg.de>

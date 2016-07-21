@@ -852,6 +852,12 @@ const struct function common_desktop_functions_possible[] = {
 // { "glTextureStorage3DMultisampleEXT", 43, -1 },      // XXX: Add to xml
 
 /* GL 4.5 */
+   /* aliased versions checked above */
+   //{ "glGetGraphicsResetStatus", 45, -1 },
+   //{ "glReadnPixels", 45, -1 },
+   //{ "glGetnUniformfv", 45, -1 },
+   //{ "glGetnUniformiv", 45, -1 },
+   //{ "glGetnUniformuiv", 45, -1 },
    { "glMemoryBarrierByRegion", 45, -1 },
 
    /* GL_ARB_internalformat_query */
@@ -945,6 +951,9 @@ const struct function common_desktop_functions_possible[] = {
 
    /* GL_GREMEDY_string_marker */
    { "glStringMarkerGREMEDY", 15, -1 },
+
+   /* GL_EXT_window_rectangles */
+   { "glWindowRectanglesEXT", 30, -1 },
 
    { NULL, 0, -1 }
 };
@@ -2306,6 +2315,13 @@ const struct function gles2_functions_possible[] = {
    /* GL_EXT_polygon_offset_clamp */
    { "glPolygonOffsetClampEXT", 11, -1 },
 
+   /* GL_KHR_robustness */
+   { "glGetGraphicsResetStatusKHR", 20, -1 },
+   { "glReadnPixelsKHR", 20, -1 },
+   { "glGetnUniformfvKHR", 20, -1 },
+   { "glGetnUniformivKHR", 20, -1 },
+   { "glGetnUniformuivKHR", 20, -1 },
+
    { NULL, 0, -1 }
 };
 
@@ -2480,6 +2496,9 @@ const struct function gles3_functions_possible[] = {
    { "glDrawArraysInstancedBaseInstanceEXT", 30, -1 },
    { "glDrawElementsInstancedBaseInstanceEXT", 30, -1 },
    { "glDrawElementsInstancedBaseVertexBaseInstanceEXT", 30, -1 },
+
+   /* GL_EXT_window_rectangles */
+   { "glWindowRectanglesEXT", 30, -1 },
 
    { NULL, 0, -1 }
 };

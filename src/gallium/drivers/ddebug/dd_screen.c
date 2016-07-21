@@ -101,6 +101,14 @@ dd_screen_get_timestamp(struct pipe_screen *_screen)
    return screen->get_timestamp(screen);
 }
 
+static void dd_screen_query_memory_info(struct pipe_screen *_screen,
+                                        struct pipe_memory_info *info)
+{
+   struct pipe_screen *screen = dd_screen(_screen)->screen;
+
+   return screen->query_memory_info(screen, info);
+}
+
 static struct pipe_context *
 dd_screen_context_create(struct pipe_screen *_screen, void *priv,
                          unsigned flags)
@@ -284,9 +292,14 @@ ddebug_screen_create(struct pipe_screen *screen)
    struct dd_screen *dscreen;
    const char *option = debug_get_option("GALLIUM_DDEBUG", NULL);
    bool dump_always = option && !strncmp(option, "always", 6);
+   bool dump_apitrace = option && !strncmp(option, "apitrace", 8);
    bool no_flush = option && strstr(option, "noflush");
    bool help = option && !strcmp(option, "help");
    unsigned timeout = 0;
+   unsigned apitrace_dump_call = 0;
+
+   if (dump_apitrace)
+      no_flush = true;
 
    if (help) {
       puts("Gallium driver debugger");
@@ -302,6 +315,9 @@ ddebug_screen_create(struct pipe_screen *screen)
       puts("    fence timeout and dump context and driver information into");
       puts("    $HOME/"DD_DIR"/ when a hang is detected.");
       puts("");
+      puts("  GALLIUM_DDEBUG=\"apitrace [call#] [verbose]\"");
+      puts("    Dump apitrace draw call information into $HOME/"DD_DIR"/. Implies 'noflush'.");
+      puts("");
       puts("  If 'noflush' is specified, do not flush on every draw call. In hang");
       puts("  detection mode, this only detect hangs in pipe->flush.");
       puts("  If 'verbose' is specified, additional information is written to stderr.");
@@ -314,7 +330,10 @@ ddebug_screen_create(struct pipe_screen *screen)
 
    if (!option)
       return screen;
-   if (!dump_always && sscanf(option, "%u", &timeout) != 1)
+   if (!dump_always && !dump_apitrace && sscanf(option, "%u", &timeout) != 1)
+      return screen;
+
+   if (dump_apitrace && sscanf(option+8, "%u", &apitrace_dump_call) != 1)
       return screen;
 
    dscreen = CALLOC_STRUCT(dd_screen);
@@ -332,6 +351,7 @@ ddebug_screen_create(struct pipe_screen *screen)
    dscreen->base.get_paramf = dd_screen_get_paramf;
    dscreen->base.get_compute_param = dd_screen_get_compute_param;
    dscreen->base.get_shader_param = dd_screen_get_shader_param;
+   dscreen->base.query_memory_info = dd_screen_query_memory_info;
    /* get_video_param */
    /* get_compute_param */
    SCR_INIT(get_timestamp);
@@ -354,9 +374,11 @@ ddebug_screen_create(struct pipe_screen *screen)
 
    dscreen->screen = screen;
    dscreen->timeout_ms = timeout;
-   dscreen->mode = dump_always ? DD_DUMP_ALL_CALLS : DD_DETECT_HANGS;
+   dscreen->mode = dump_always ? DD_DUMP_ALL_CALLS :
+                   dump_apitrace ? DD_DUMP_APITRACE_CALL : DD_DETECT_HANGS;
    dscreen->no_flush = no_flush;
    dscreen->verbose = strstr(option, "verbose") != NULL;
+   dscreen->apitrace_dump_call = apitrace_dump_call;
 
    switch (dscreen->mode) {
    case DD_DUMP_ALL_CALLS:
@@ -364,7 +386,10 @@ ddebug_screen_create(struct pipe_screen *screen)
       break;
    case DD_DETECT_HANGS:
       fprintf(stderr, "Gallium debugger active. "
-              "The hang detection timout is %i ms.\n", timeout);
+              "The hang detection timeout is %i ms.\n", timeout);
+      break;
+   case DD_DUMP_APITRACE_CALL:
+      fprintf(stderr, "Gallium debugger active. Going to dump an apitrace call.\n");
       break;
    default:
       assert(0);

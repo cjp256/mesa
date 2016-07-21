@@ -484,7 +484,10 @@ public:
       this->interface_type = type;
       if (this->is_interface_instance()) {
          this->u.max_ifc_array_access =
-            rzalloc_array(this, unsigned, type->length);
+            ralloc_array(this, int, type->length);
+         for (unsigned i = 0; i < type->length; i++) {
+            this->u.max_ifc_array_access[i] = -1;
+         }
       }
    }
 
@@ -520,7 +523,7 @@ public:
           * zero.
           */
          for (unsigned i = 0; i < this->interface_type->length; i++)
-            assert(this->u.max_ifc_array_access[i] == 0);
+            assert(this->u.max_ifc_array_access[i] == -1);
 #endif
          ralloc_free(this->u.max_ifc_array_access);
          this->u.max_ifc_array_access = NULL;
@@ -534,13 +537,17 @@ public:
       return this->interface_type;
    }
 
+   enum glsl_interface_packing get_interface_type_packing() const
+   {
+     return this->interface_type->get_interface_packing();
+   }
    /**
     * Get the max_ifc_array_access pointer
     *
     * A "set" function is not needed because the array is dynmically allocated
     * as necessary.
     */
-   inline unsigned *get_max_ifc_array_access()
+   inline int *get_max_ifc_array_access()
    {
       assert(this->data._num_state_slots == 0);
       return this->u.max_ifc_array_access;
@@ -581,6 +588,13 @@ public:
          this->data._num_state_slots = n;
 
       return this->u.state_slots;
+   }
+
+   inline bool is_interpolation_flat() const
+   {
+      return this->data.interpolation == INTERP_MODE_FLAT ||
+             this->type->contains_integer() ||
+             this->type->contains_double();
    }
 
    inline bool is_name_ralloced() const
@@ -672,7 +686,7 @@ public:
       /**
        * Interpolation mode for shader inputs / outputs
        *
-       * \sa ir_variable_interpolation
+       * \sa glsl_interp_mode
        */
       unsigned interpolation:2;
 
@@ -816,6 +830,7 @@ public:
        */
       unsigned from_ssbo_unsized_array:1; /**< unsized array buffer variable. */
 
+      unsigned implicit_sized_array:1;
       /**
        * Emit a warning if this variable is accessed.
        */
@@ -888,9 +903,9 @@ public:
       /**
        * Highest element accessed with a constant expression array index
        *
-       * Not used for non-array variables.
+       * Not used for non-array variables. -1 is never accessed.
        */
-      unsigned max_array_access;
+      int max_array_access;
 
       /**
        * Transform feedback buffer.
@@ -938,7 +953,7 @@ private:
        * For variables whose type is not an interface block, this pointer is
        * NULL.
        */
-      unsigned *max_ifc_array_access;
+      int *max_ifc_array_access;
 
       /**
        * Built-in state that backs this uniform
@@ -1474,9 +1489,16 @@ enum ir_expression_operation {
    ir_unop_ssbo_unsized_array_length,
 
    /**
+    * Vote among threads on the value of the boolean argument.
+    */
+   ir_unop_vote_any,
+   ir_unop_vote_all,
+   ir_unop_vote_eq,
+
+   /**
     * A sentinel marking the last of the unary operations.
     */
-   ir_last_unop = ir_unop_ssbo_unsized_array_length,
+   ir_last_unop = ir_unop_vote_eq,
 
    ir_binop_add,
    ir_binop_sub,
@@ -2558,7 +2580,8 @@ _mesa_glsl_initialize_variables(exec_list *instructions,
 				struct _mesa_glsl_parse_state *state);
 
 extern void
-_mesa_glsl_initialize_derived_variables(gl_shader *shader);
+_mesa_glsl_initialize_derived_variables(struct gl_context *ctx,
+                                        gl_shader *shader);
 
 extern void
 _mesa_glsl_initialize_functions(_mesa_glsl_parse_state *state);
@@ -2577,7 +2600,7 @@ extern gl_shader *
 _mesa_glsl_get_builtin_function_shader(void);
 
 extern ir_function_signature *
-_mesa_get_main_function_signature(gl_shader *sh);
+_mesa_get_main_function_signature(glsl_symbol_table *symbols);
 
 extern void
 _mesa_glsl_release_functions(void);

@@ -1481,16 +1481,31 @@ CodeEmitterGK110::emitFlow(const Instruction *i)
 void
 CodeEmitterGK110::emitVOTE(const Instruction *i)
 {
-   assert(i->src(0).getFile() == FILE_PREDICATE &&
-          i->def(1).getFile() == FILE_PREDICATE);
+   assert(i->src(0).getFile() == FILE_PREDICATE);
 
    code[0] = 0x00000002;
    code[1] = 0x86c00000 | (i->subOp << 19);
 
    emitPredicate(i);
 
-   defId(i->def(0), 2);
-   defId(i->def(1), 48);
+   unsigned rp = 0;
+   for (int d = 0; i->defExists(d); d++) {
+      if (i->def(d).getFile() == FILE_PREDICATE) {
+         assert(!(rp & 2));
+         rp |= 2;
+         defId(i->def(d), 48);
+      } else if (i->def(d).getFile() == FILE_GPR) {
+         assert(!(rp & 1));
+         rp |= 1;
+         defId(i->def(d), 2);
+      } else {
+         assert(!"Unhandled def");
+      }
+   }
+   if (!(rp & 1))
+      code[0] |= 255 << 2;
+   if (!(rp & 2))
+      code[1] |= 7 << 16;
    if (i->src(0).mod == Modifier(NV50_IR_MOD_NOT))
       code[1] |= 1 << 13;
    srcId(i->src(0), 42);
@@ -2080,15 +2095,29 @@ CodeEmitterGK110::emitLOAD(const Instruction *i)
    code[1] |= offset >> 9;
 
    // Locked store on shared memory can fail.
+   int r = 0, p = -1;
    if (i->src(0).getFile() == FILE_MEMORY_SHARED &&
        i->subOp == NV50_IR_SUBOP_LOAD_LOCKED) {
-      assert(i->defExists(1));
-      defId(i->def(1), 32 + 16);
+      if (i->def(0).getFile() == FILE_PREDICATE) { // p, #
+         r = -1;
+         p = 0;
+      } else if (i->defExists(1)) { // r, p
+         p = 1;
+      } else {
+         assert(!"Expected predicate dest for load locked");
+      }
    }
 
    emitPredicate(i);
 
-   defId(i->def(0), 2);
+   if (r >= 0)
+      defId(i->def(r), 2);
+   else
+      code[0] |= 255 << 2;
+
+   if (p >= 0)
+      defId(i->def(p), 32 + 16);
+
    if (i->getIndirect(0, 0)) {
       srcId(i->src(0).getIndirect(0), 10);
       if (i->getIndirect(0, 0)->reg.size == 8)
@@ -2125,6 +2154,34 @@ CodeEmitterGK110::getSRegEncoding(const ValueRef& ref)
 void
 CodeEmitterGK110::emitMOV(const Instruction *i)
 {
+   if (i->def(0).getFile() == FILE_PREDICATE) {
+      if (i->src(0).getFile() == FILE_GPR) {
+         // Use ISETP.NE.AND dst, PT, src, RZ, PT
+         code[0] = 0x00000002;
+         code[1] = 0xdb500000;
+
+         code[0] |= 0x7 << 2;
+         code[0] |= 0xff << 23;
+         code[1] |= 0x7 << 10;
+         srcId(i->src(0), 10);
+      } else
+      if (i->src(0).getFile() == FILE_PREDICATE) {
+         // Use PSETP.AND.AND dst, PT, src, PT, PT
+         code[0] = 0x00000002;
+         code[1] = 0x84800000;
+
+         code[0] |= 0x7 << 2;
+         code[1] |= 0x7 << 0;
+         code[1] |= 0x7 << 10;
+
+         srcId(i->src(0), 14);
+      } else {
+         assert(!"Unexpected source for predicate destination");
+         emitNOP(i);
+      }
+      emitPredicate(i);
+      defId(i->def(0), 5);
+   } else
    if (i->src(0).getFile() == FILE_SYSTEM_VALUE) {
       code[0] = 0x00000002 | (getSRegEncoding(i->src(0)) << 23);
       code[1] = 0x86400000;

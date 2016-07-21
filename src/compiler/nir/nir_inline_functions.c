@@ -25,42 +25,77 @@
 #include "nir_builder.h"
 #include "nir_control_flow.h"
 
+static bool
+deref_apply_constant_initializer(nir_deref_var *deref, void *state)
+{
+   struct nir_builder *b = state;
+
+   nir_load_const_instr *initializer =
+      nir_deref_get_const_initializer_load(b->shader, deref);
+   nir_builder_instr_insert(b, &initializer->instr);
+
+   nir_store_deref_var(b, deref, &initializer->def, 0xf);
+
+   return true;
+}
+
 static bool inline_function_impl(nir_function_impl *impl, struct set *inlined);
 
-static bool
-rewrite_param_derefs_block(nir_block *block, nir_call_instr *call)
+static void
+convert_deref_to_param_deref(nir_instr *instr, nir_deref_var **deref,
+                             nir_call_instr *call)
 {
-   nir_foreach_instr_safe(instr, block) {
-      if (instr->type != nir_instr_type_intrinsic)
-         continue;
+   /* This isn't a parameter, just return the deref */
+   if ((*deref)->var->data.mode != nir_var_param)
+      return;
 
+   int param_idx = (*deref)->var->data.location;
+
+   nir_deref_var *call_deref;
+   if (param_idx >= 0) {
+      assert(param_idx < call->callee->num_params);
+      call_deref = call->params[param_idx];
+   } else {
+      call_deref = call->return_deref;
+   }
+   assert(call_deref);
+
+   /* Now we make a new deref by concatenating the deref in the call's
+    * parameter with the deref we were given.
+    */
+   nir_deref_var *new_deref = nir_deref_as_var(nir_copy_deref(instr, &call_deref->deref));
+   nir_deref *new_tail = nir_deref_tail(&new_deref->deref);
+   new_tail->child = (*deref)->deref.child;
+   ralloc_steal(new_tail, new_tail->child);
+   *deref = new_deref;
+}
+
+static void
+rewrite_param_derefs(nir_instr *instr, nir_call_instr *call)
+{
+   switch (instr->type) {
+   case nir_instr_type_intrinsic: {
       nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
 
       for (unsigned i = 0;
            i < nir_intrinsic_infos[intrin->intrinsic].num_variables; i++) {
-         if (intrin->variables[i]->var->data.mode != nir_var_param)
-            continue;
-
-         int param_idx = intrin->variables[i]->var->data.location;
-
-         nir_deref_var *call_deref;
-         if (param_idx >= 0) {
-            assert(param_idx < call->callee->num_params);
-            call_deref = call->params[param_idx];
-         } else {
-            call_deref = call->return_deref;
-         }
-         assert(call_deref);
-
-         nir_deref_var *new_deref = nir_deref_as_var(nir_copy_deref(intrin, &call_deref->deref));
-         nir_deref *new_tail = nir_deref_tail(&new_deref->deref);
-         new_tail->child = intrin->variables[i]->deref.child;
-         ralloc_steal(new_tail, new_tail->child);
-         intrin->variables[i] = new_deref;
+         convert_deref_to_param_deref(instr, &intrin->variables[i], call);
       }
+      break;
    }
 
-   return true;
+   case nir_instr_type_tex: {
+      nir_tex_instr *tex = nir_instr_as_tex(instr);
+      if (tex->texture)
+         convert_deref_to_param_deref(&tex->instr, &tex->texture, call);
+      if (tex->sampler)
+         convert_deref_to_param_deref(&tex->instr, &tex->sampler, call);
+      break;
+   }
+
+   default:
+      break; /* Nothing else has derefs */
+   }
 }
 
 static void
@@ -89,7 +124,7 @@ lower_param_to_local(nir_variable *param, nir_function_impl *impl, bool write)
 static bool
 lower_params_to_locals_block(nir_block *block, nir_function_impl *impl)
 {
-   nir_foreach_instr_safe(instr, block) {
+   nir_foreach_instr(instr, block) {
       if (instr->type != nir_instr_type_intrinsic)
          continue;
 
@@ -153,10 +188,34 @@ inline_functions_block(nir_block *block, nir_builder *b,
       /* Add copies of all in parameters */
       assert(call->num_params == callee_copy->num_params);
 
+      b->cursor = nir_before_instr(&call->instr);
+
+      /* Before we insert the copy of the function, we need to lower away
+       * constant initializers on local variables.  This is because constant
+       * initializers happen (effectively) at the top of the function and,
+       * since these are about to become locals of the calling function,
+       * initialization will happen at the top of the caller rather than at
+       * the top of the callee.  This isn't usually a problem, but if we are
+       * being inlined inside of a loop, it can result in the variable not
+       * getting re-initialized properly for all loop iterations.
+       */
+      nir_foreach_variable(local, &callee_copy->locals) {
+         if (!local->constant_initializer)
+            continue;
+
+         nir_deref_var deref;
+         deref.deref.deref_type = nir_deref_type_var,
+         deref.deref.child = NULL;
+         deref.deref.type = local->type,
+         deref.var = local;
+
+         nir_deref_foreach_leaf(&deref, deref_apply_constant_initializer, b);
+
+         local->constant_initializer = NULL;
+      }
+
       exec_list_append(&b->impl->locals, &callee_copy->locals);
       exec_list_append(&b->impl->registers, &callee_copy->registers);
-
-      b->cursor = nir_before_instr(&call->instr);
 
       /* We now need to tie the two functions together using the
        * parameters.  There are two ways we do this: One is to turn the
@@ -184,7 +243,8 @@ inline_functions_block(nir_block *block, nir_builder *b,
       }
 
       nir_foreach_block(block, callee_copy) {
-         rewrite_param_derefs_block(block, call);
+         nir_foreach_instr(instr, block)
+            rewrite_param_derefs(instr, call);
       }
 
       /* Pluck the body out of the function and place it here */

@@ -51,15 +51,15 @@ static void cik_sdma_do_copy_buffer(struct si_context *ctx,
 
 	for (i = 0; i < ncopy; i++) {
 		csize = MIN2(size, CIK_SDMA_COPY_MAX_SIZE);
-		cs->buf[cs->cdw++] = CIK_SDMA_PACKET(CIK_SDMA_OPCODE_COPY,
-						     CIK_SDMA_COPY_SUB_OPCODE_LINEAR,
-						     0);
-		cs->buf[cs->cdw++] = csize;
-		cs->buf[cs->cdw++] = 0; /* src/dst endian swap */
-		cs->buf[cs->cdw++] = src_offset;
-		cs->buf[cs->cdw++] = src_offset >> 32;
-		cs->buf[cs->cdw++] = dst_offset;
-		cs->buf[cs->cdw++] = dst_offset >> 32;
+		radeon_emit(cs, CIK_SDMA_PACKET(CIK_SDMA_OPCODE_COPY,
+						CIK_SDMA_COPY_SUB_OPCODE_LINEAR,
+						0));
+		radeon_emit(cs, csize);
+		radeon_emit(cs, 0); /* src/dst endian swap */
+		radeon_emit(cs, src_offset);
+		radeon_emit(cs, src_offset >> 32);
+		radeon_emit(cs, dst_offset);
+		radeon_emit(cs, dst_offset >> 32);
 		dst_offset += csize;
 		src_offset += csize;
 		size -= csize;
@@ -370,12 +370,13 @@ static bool cik_sdma_copy_texture(struct si_context *sctx,
 		    copy_height <= (1 << 14) &&
 		    copy_depth <= (1 << 11)) {
 			struct radeon_winsys_cs *cs = sctx->b.dma.cs;
+			uint32_t direction = linear == rdst ? 1u << 31 : 0;
 
 			r600_need_dma_space(&sctx->b, 14, &rdst->resource, &rsrc->resource);
 
 			radeon_emit(cs, CIK_SDMA_PACKET(CIK_SDMA_OPCODE_COPY,
 							CIK_SDMA_COPY_SUB_OPCODE_TILED_SUB_WINDOW, 0) |
-					((linear == rdst) << 31));
+					direction);
 			radeon_emit(cs, tiled_address);
 			radeon_emit(cs, tiled_address >> 32);
 			radeon_emit(cs, tiled_x | (tiled_y << 16));

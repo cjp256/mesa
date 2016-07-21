@@ -1187,8 +1187,10 @@ dri2_make_current(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *dsurf,
    __DRIcontext *cctx;
 
    /* make new bindings */
-   if (!_eglBindContext(ctx, dsurf, rsurf, &old_ctx, &old_dsurf, &old_rsurf))
+   if (!_eglBindContext(ctx, dsurf, rsurf, &old_ctx, &old_dsurf, &old_rsurf)) {
+      /* _eglBindContext already sets the EGL error (in _eglCheckMakeCurrent) */
       return EGL_FALSE;
+   }
 
    /* flush before context switch */
    if (old_ctx && dri2_drv->glFlush)
@@ -1228,7 +1230,11 @@ dri2_make_current(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *dsurf,
       _eglPutSurface(old_rsurf);
       _eglPutContext(old_ctx);
 
-      return EGL_FALSE;
+      /* dri2_dpy->core->bindContext failed. We cannot tell for sure why, but
+       * setting the error to EGL_BAD_MATCH is surely better than leaving it
+       * as EGL_SUCCESS.
+       */
+      return _eglError(EGL_BAD_MATCH, "eglMakeCurrent");
    }
 }
 
@@ -1957,7 +1963,7 @@ dri2_check_dma_buf_format(const _EGLImageAttribs *attrs)
  *
  * Therefore we must never close or otherwise modify the file descriptors.
  */
-static _EGLImage *
+_EGLImage *
 dri2_create_image_dma_buf(_EGLDisplay *disp, _EGLContext *ctx,
 			  EGLClientBuffer buffer, const EGLint *attr_list)
 {
@@ -2582,10 +2588,7 @@ dri2_client_wait_sync(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSync *sync,
 
          ret = cnd_wait(&dri2_sync->cond, &dri2_sync->mutex);
 
-         if (mtx_unlock(&dri2_sync->mutex)) {
-            ret = EGL_FALSE;
-            goto cleanup;
-         }
+         mtx_unlock(&dri2_sync->mutex);
 
          if (ret) {
             _eglError(EGL_BAD_PARAMETER, "eglClientWaitSyncKHR");
@@ -2616,10 +2619,7 @@ dri2_client_wait_sync(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSync *sync,
 
             ret = cnd_timedwait(&dri2_sync->cond, &dri2_sync->mutex, &expire);
 
-            if (mtx_unlock(&dri2_sync->mutex)) {
-               ret = EGL_FALSE;
-               goto cleanup;
-            }
+            mtx_unlock(&dri2_sync->mutex);
 
             if (ret)
                if (ret == thrd_busy) {
@@ -2691,6 +2691,7 @@ dri2_server_wait_sync(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSync *sync)
    return EGL_TRUE;
 }
 
+
 static void
 dri2_unload(_EGLDriver *drv)
 {
@@ -2709,6 +2710,8 @@ dri2_load(_EGLDriver *drv)
    const char *libname = "libglapi.so";
 #elif defined(__APPLE__)
    const char *libname = "libglapi.0.dylib";
+#elif defined(__CYGWIN__)
+   const char *libname = "cygglapi-0.dll";
 #else
    const char *libname = "libglapi.so.0";
 #endif

@@ -47,9 +47,10 @@ struct fd_vertex_stateobj;
 struct fd_texture_stateobj {
 	struct pipe_sampler_view *textures[PIPE_MAX_SAMPLERS];
 	unsigned num_textures;
+	unsigned valid_textures;
 	struct pipe_sampler_state *samplers[PIPE_MAX_SAMPLERS];
 	unsigned num_samplers;
-	unsigned dirty_samplers;
+	unsigned valid_samplers;
 };
 
 struct fd_program_stateobj {
@@ -315,7 +316,7 @@ struct fd_context {
 	 */
 	struct fd_gmem_stateobj gmem;
 	struct fd_vsc_pipe      pipe[8];
-	struct fd_tile          tile[256];
+	struct fd_tile          tile[512];
 
 	/* which state objects need to be re-emit'd: */
 	enum {
@@ -393,8 +394,9 @@ struct fd_context {
 	void (*emit_const)(struct fd_ringbuffer *ring, enum shader_t type,
 			uint32_t regid, uint32_t offset, uint32_t sizedwords,
 			const uint32_t *dwords, struct pipe_resource *prsc);
+	/* emit bo addresses as constant: */
 	void (*emit_const_bo)(struct fd_ringbuffer *ring, enum shader_t type, boolean write,
-			uint32_t regid, uint32_t num, struct fd_bo **bos, uint32_t *offsets);
+			uint32_t regid, uint32_t num, struct pipe_resource **prscs, uint32_t *offsets);
 
 	/* indirect-branch emit: */
 	void (*emit_ib)(struct fd_ringbuffer *ring, struct fd_ringmarker *start,

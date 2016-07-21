@@ -35,7 +35,7 @@
 #include "pipebuffer/pb_cache.h"
 #include "gallium/drivers/radeon/radeon_winsys.h"
 #include "addrlib/addrinterface.h"
-#include "os/os_thread.h"
+#include "util/u_queue.h"
 #include <amdgpu.h>
 
 struct amdgpu_cs;
@@ -58,10 +58,15 @@ struct amdgpu_winsys {
 
    struct radeon_info info;
 
+   /* multithreaded IB submission */
+   struct util_queue cs_queue;
+
    struct amdgpu_gpu_info amdinfo;
    ADDR_HANDLE addrlib;
    uint32_t rev_id;
    unsigned family;
+
+   bool check_vm;
 
    /* List of all allocated buffers */
    pipe_mutex global_bo_list_lock;

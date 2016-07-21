@@ -93,12 +93,12 @@ static unsigned cik_get_num_tile_pipes(struct amdgpu_gpu_info *info)
 }
 
 /* Helper function to do the ioctls needed for setup and init. */
-static boolean do_winsys_init(struct amdgpu_winsys *ws, int fd)
+static bool do_winsys_init(struct amdgpu_winsys *ws, int fd)
 {
    struct amdgpu_buffer_size_alignments alignment_info = {};
    struct amdgpu_heap_info vram, gtt;
    struct drm_amdgpu_info_hw_ip dma = {}, uvd = {}, vce = {};
-   uint32_t vce_version = 0, vce_feature = 0;
+   uint32_t vce_version = 0, vce_feature = 0, uvd_version = 0, uvd_feature = 0;
    int r, i, j;
    drmDevicePtr devinfo;
 
@@ -148,6 +148,13 @@ static boolean do_winsys_init(struct amdgpu_winsys *ws, int fd)
    r = amdgpu_query_hw_ip_info(ws->dev, AMDGPU_HW_IP_UVD, 0, &uvd);
    if (r) {
       fprintf(stderr, "amdgpu: amdgpu_query_hw_ip_info(uvd) failed.\n");
+      goto fail;
+   }
+
+   r = amdgpu_query_firmware_version(ws->dev, AMDGPU_INFO_FW_UVD, 0, 0,
+				     &uvd_version, &uvd_feature);
+   if (r) {
+      fprintf(stderr, "amdgpu: amdgpu_query_firmware_version(uvd) failed.\n");
       goto fail;
    }
 
@@ -263,19 +270,23 @@ static boolean do_winsys_init(struct amdgpu_winsys *ws, int fd)
    /* Set hardware information. */
    ws->info.gart_size = gtt.heap_size;
    ws->info.vram_size = vram.heap_size;
+   /* TODO: the kernel reports vram/gart.max_allocation == 251 MB (bug?) */
+   ws->info.max_alloc_size = MAX2(ws->info.vram_size, ws->info.gart_size);
    /* convert the shader clock from KHz to MHz */
    ws->info.max_shader_clock = ws->amdinfo.max_engine_clk / 1000;
    ws->info.max_se = ws->amdinfo.num_shader_engines;
    ws->info.max_sh_per_se = ws->amdinfo.num_shader_arrays_per_engine;
    ws->info.has_uvd = uvd.available_rings != 0;
+   ws->info.uvd_fw_version =
+         uvd.available_rings ? uvd_version : 0;
    ws->info.vce_fw_version =
          vce.available_rings ? vce_version : 0;
-   ws->info.has_userptr = TRUE;
+   ws->info.has_userptr = true;
    ws->info.num_render_backends = ws->amdinfo.rb_pipes;
    ws->info.clock_crystal_freq = ws->amdinfo.gpu_counter_freq;
    ws->info.num_tile_pipes = cik_get_num_tile_pipes(&ws->amdinfo);
    ws->info.pipe_interleave_bytes = 256 << ((ws->amdinfo.gb_addr_cfg >> 4) & 0x7);
-   ws->info.has_virtual_memory = TRUE;
+   ws->info.has_virtual_memory = true;
    ws->info.has_sdma = dma.available_rings != 0;
 
    /* Get the number of good compute units. */
@@ -294,19 +305,24 @@ static boolean do_winsys_init(struct amdgpu_winsys *ws, int fd)
 
    ws->info.gart_page_size = alignment_info.size_remote;
 
-   return TRUE;
+   ws->check_vm = strstr(debug_get_option("R600_DEBUG", ""), "check_vm") != NULL;
+
+   return true;
 
 fail:
    if (ws->addrlib)
       AddrDestroy(ws->addrlib);
    amdgpu_device_deinitialize(ws->dev);
    ws->dev = NULL;
-   return FALSE;
+   return false;
 }
 
 static void amdgpu_winsys_destroy(struct radeon_winsys *rws)
 {
    struct amdgpu_winsys *ws = (struct amdgpu_winsys*)rws;
+
+   if (util_queue_is_initialized(&ws->cs_queue))
+      util_queue_destroy(&ws->cs_queue);
 
    pipe_mutex_destroy(ws->bo_fence_lock);
    pb_cache_deinit(&ws->bo_cache);
@@ -322,11 +338,11 @@ static void amdgpu_winsys_query_info(struct radeon_winsys *rws,
    *info = ((struct amdgpu_winsys *)rws)->info;
 }
 
-static boolean amdgpu_cs_request_feature(struct radeon_winsys_cs *rcs,
-                                         enum radeon_feature_id fid,
-                                         boolean enable)
+static bool amdgpu_cs_request_feature(struct radeon_winsys_cs *rcs,
+                                      enum radeon_feature_id fid,
+                                      bool enable)
 {
-   return FALSE;
+   return false;
 }
 
 static uint64_t amdgpu_query_value(struct radeon_winsys *rws,
@@ -391,6 +407,8 @@ static int compare_dev(void *key1, void *key2)
 {
    return key1 != key2;
 }
+
+DEBUG_GET_ONCE_BOOL_OPTION(thread, "RADEON_THREAD", true)
 
 static bool amdgpu_winsys_unref(struct radeon_winsys *rws)
 {
@@ -464,7 +482,7 @@ amdgpu_winsys_create(int fd, radeon_screen_create_t screen_create)
       goto fail;
 
    /* Create managers. */
-   pb_cache_init(&ws->bo_cache, 500000, 2.0f, 0,
+   pb_cache_init(&ws->bo_cache, 500000, ws->check_vm ? 1.0f : 2.0f, 0,
                  (ws->info.vram_size + ws->info.gart_size) / 8,
                  amdgpu_bo_destroy, amdgpu_bo_can_reclaim);
 
@@ -486,6 +504,9 @@ amdgpu_winsys_create(int fd, radeon_screen_create_t screen_create)
    LIST_INITHEAD(&ws->global_bo_list);
    pipe_mutex_init(ws->global_bo_list_lock);
    pipe_mutex_init(ws->bo_fence_lock);
+
+   if (sysconf(_SC_NPROCESSORS_ONLN) > 1 && debug_get_option_thread())
+      util_queue_init(&ws->cs_queue, "amdgpu_cs", 8, 1);
 
    /* Create the screen at the end. The winsys must be initialized
     * completely.

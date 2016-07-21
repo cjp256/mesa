@@ -75,6 +75,7 @@ LIBDRM_INTEL_REQUIRED=2.4.61
 LIBDRM_NVVIEUX_REQUIRED=2.4.66
 LIBDRM_NOUVEAU_REQUIRED=2.4.66
 LIBDRM_FREEDRENO_REQUIRED=2.4.67
+LIBDRM_VC4_REQUIRED=2.4.69
 DRI2PROTO_REQUIRED=2.6
 DRI3PROTO_REQUIRED=1.0
 PRESENTPROTO_REQUIRED=1.0
@@ -99,7 +100,6 @@ AM_PROG_CC_C_O
 AM_PROG_AS
 AX_CHECK_GNU_MAKE
 AC_CHECK_PROGS([PYTHON2], [python2.7 python2 python])
-AC_CHECK_PROGS([PYTHON3], [python3.5 python3.4 python3])
 AC_PROG_SED
 AC_PROG_MKDIR_P
 
@@ -226,7 +226,9 @@ AX_GCC_FUNC_ATTRIBUTE([packed])
 AX_GCC_FUNC_ATTRIBUTE([pure])
 AX_GCC_FUNC_ATTRIBUTE([returns_nonnull])
 AX_GCC_FUNC_ATTRIBUTE([unused])
+AX_GCC_FUNC_ATTRIBUTE([visibility])
 AX_GCC_FUNC_ATTRIBUTE([warn_unused_result])
+AX_GCC_FUNC_ATTRIBUTE([weak])
 
 AM_CONDITIONAL([GEN_ASM_OFFSETS], test "x$GEN_ASM_OFFSETS" = xyes)
 
@@ -249,17 +251,20 @@ _SAVE_CPPFLAGS="$CPPFLAGS"
 dnl Compiler macros
 DEFINES="-D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS"
 AC_SUBST([DEFINES])
+android=no
 case "$host_os" in
-linux*|*-gnu*|gnu*)
+*-android)
+    android=yes
+    ;;
+linux*|*-gnu*|gnu*|cygwin*)
     DEFINES="$DEFINES -D_GNU_SOURCE"
     ;;
 solaris*)
     DEFINES="$DEFINES -DSVR4"
     ;;
-cygwin*)
-    DEFINES="$DEFINES -D_XOPEN_SOURCE=700"
-    ;;
 esac
+
+AM_CONDITIONAL(HAVE_ANDROID, test "x$android" = xyes)
 
 dnl Add flags for gcc and g++
 if test "x$GCC" = xyes; then
@@ -301,10 +306,6 @@ if test "x$GCC" = xyes; then
     # We don't want floating-point math functions to set errno or trap
     CFLAGS="$CFLAGS -fno-math-errno -fno-trapping-math"
 
-    # gcc's builtin memcmp is slower than glibc's
-    # http://gcc.gnu.org/bugzilla/show_bug.cgi?id=43052
-    CFLAGS="$CFLAGS -fno-builtin-memcmp"
-
     # Flags to help ensure that certain portions of the code -- and only those
     # portions -- can be built with MSVC:
     # - src/util, src/gallium/auxiliary, rc/gallium/drivers/llvmpipe, and
@@ -344,9 +345,8 @@ if test "x$GXX" = xyes; then
     # Work around aliasing bugs - developers should comment this out
     CXXFLAGS="$CXXFLAGS -fno-strict-aliasing"
 
-    # gcc's builtin memcmp is slower than glibc's
-    # http://gcc.gnu.org/bugzilla/show_bug.cgi?id=43052
-    CXXFLAGS="$CXXFLAGS -fno-builtin-memcmp"
+    # We don't want floating-point math functions to set errno or trap
+    CXXFLAGS="$CXXFLAGS -fno-math-errno -fno-trapping-math"
 fi
 
 AC_SUBST([MSVC2013_COMPAT_CFLAGS])
@@ -515,6 +515,8 @@ else
    DEFINES="$DEFINES -DNDEBUG"
 fi
 
+DEFAULT_GL_LIB_NAME=GL
+
 dnl
 dnl Check if linker supports -Bsymbolic
 dnl
@@ -612,6 +614,23 @@ esac
 
 AM_CONDITIONAL(HAVE_COMPAT_SYMLINKS, test "x$HAVE_COMPAT_SYMLINKS" = xyes)
 
+DEFAULT_GL_LIB_NAME=GL
+
+dnl
+dnl Libglvnd configuration
+dnl
+AC_ARG_ENABLE([libglvnd],
+    [AS_HELP_STRING([--enable-libglvnd],
+        [Build for libglvnd @<:@default=disabled@:>@])],
+    [enable_libglvnd="$enableval"],
+    [enable_libglvnd=no])
+AM_CONDITIONAL(USE_LIBGLVND_GLX, test "x$enable_libglvnd" = xyes)
+#AM_COND_IF([USE_LIBGLVND_GLX], [DEFINES="${DEFINES} -DUSE_LIBGLVND_GLX=1"])
+if test "x$enable_libglvnd" = xyes ; then
+    DEFINES="${DEFINES} -DUSE_LIBGLVND_GLX=1"
+    DEFAULT_GL_LIB_NAME=GLX_mesa
+fi
+
 dnl
 dnl library names
 dnl
@@ -649,13 +668,13 @@ AC_ARG_WITH([gl-lib-name],
   [AS_HELP_STRING([--with-gl-lib-name@<:@=NAME@:>@],
     [specify GL library name @<:@default=GL@:>@])],
   [GL_LIB=$withval],
-  [GL_LIB=GL])
+  [GL_LIB="$DEFAULT_GL_LIB_NAME"])
 AC_ARG_WITH([osmesa-lib-name],
   [AS_HELP_STRING([--with-osmesa-lib-name@<:@=NAME@:>@],
     [specify OSMesa library name @<:@default=OSMesa@:>@])],
   [OSMESA_LIB=$withval],
   [OSMESA_LIB=OSMesa])
-AS_IF([test "x$GL_LIB" = xyes], [GL_LIB=GL])
+AS_IF([test "x$GL_LIB" = xyes], [GL_LIB="$DEFAULT_GL_LIB_NAME"])
 AS_IF([test "x$OSMESA_LIB" = xyes], [OSMESA_LIB=OSMesa])
 
 dnl
@@ -800,9 +819,21 @@ dnl to -pthread, which causes problems if we need -lpthread to appear in
 dnl pkgconfig files.
 test -z "$PTHREAD_LIBS" && PTHREAD_LIBS="-lpthread"
 
-PKG_CHECK_MODULES(PTHREADSTUBS, pthread-stubs)
-AC_SUBST(PTHREADSTUBS_CFLAGS)
-AC_SUBST(PTHREADSTUBS_LIBS)
+dnl pthread-stubs is mandatory on targets where it exists
+case "$host_os" in
+cygwin* )
+    pthread_stubs_possible="no"
+    ;;
+* )
+    pthread_stubs_possible="yes"
+    ;;
+esac
+
+if test "x$pthread_stubs_possible" = xyes; then
+    PKG_CHECK_MODULES(PTHREADSTUBS, pthread-stubs)
+    AC_SUBST(PTHREADSTUBS_CFLAGS)
+    AC_SUBST(PTHREADSTUBS_LIBS)
+fi
 
 dnl SELinux awareness.
 AC_ARG_ENABLE([selinux],
@@ -1035,9 +1066,39 @@ xno)
     ;;
 esac
 
+AM_CONDITIONAL(HAVE_GLX, test "x$enable_glx" != xno)
 AM_CONDITIONAL(HAVE_DRI_GLX, test "x$enable_glx" = xdri)
 AM_CONDITIONAL(HAVE_XLIB_GLX, test "x$enable_glx" = xxlib)
 AM_CONDITIONAL(HAVE_GALLIUM_XLIB_GLX, test "x$enable_glx" = xgallium-xlib)
+
+dnl
+dnl Libglvnd configuration
+dnl
+AC_ARG_ENABLE([libglvnd],
+    [AS_HELP_STRING([--enable-libglvnd],
+        [Build for libglvnd @<:@default=disabled@:>@])],
+    [enable_libglvnd="$enableval"],
+    [enable_libglvnd=no])
+AM_CONDITIONAL(USE_LIBGLVND_GLX, test "x$enable_libglvnd" = xyes)
+if test "x$enable_libglvnd" = xyes ; then
+    dnl XXX: update once we can handle more than libGL/glx.
+    dnl Namely: we should error out if neither of the glvnd enabled libraries
+    dnl are built
+    case "x$enable_glx" in
+    xno)
+        AC_MSG_ERROR([cannot build libglvnd without GLX])
+        ;;
+    xxlib | xgallium-xlib )
+        AC_MSG_ERROR([cannot build libgvnd when Xlib-GLX or Gallium-Xlib-GLX is enabled])
+        ;;
+    xdri)
+        ;;
+    esac
+
+    PKG_CHECK_MODULES([GLVND], libglvnd >= 0.1.0)
+    DEFINES="${DEFINES} -DUSE_LIBGLVND_GLX=1"
+    DEFAULT_GL_LIB_NAME=GLX_mesa
+fi
 
 # Check for libdrm
 PKG_CHECK_MODULES([LIBDRM], [libdrm >= $LIBDRM_REQUIRED],
@@ -1323,7 +1384,7 @@ xdri)
 
             if test x"$enable_dri3" = xyes; then
                PKG_CHECK_EXISTS([xcb >= $XCB_REQUIRED], [], AC_MSG_ERROR([DRI3 requires xcb >= $XCB_REQUIRED]))
-               dri3_modules="xcb-dri3 xcb-present xcb-sync xshmfence >= $XSHMFENCE_REQUIRED"
+               dri3_modules="xcb xcb-dri3 xcb-present xcb-sync xshmfence >= $XSHMFENCE_REQUIRED"
                PKG_CHECK_MODULES([XCB_DRI3], [$dri3_modules])
             fi
         fi
@@ -1584,9 +1645,9 @@ esac
 
 AC_ARG_WITH([vulkan-icddir],
     [AS_HELP_STRING([--with-vulkan-icddir=DIR],
-        [directory for the Vulkan driver icd files @<:@${sysconfdir}/vulkan/icd.d@:>@])],
+        [directory for the Vulkan driver icd files @<:@${datarootdir}/vulkan/icd.d@:>@])],
     [VULKAN_ICD_INSTALL_DIR="$withval"],
-    [VULKAN_ICD_INSTALL_DIR='${sysconfdir}/vulkan/icd.d'])
+    [VULKAN_ICD_INSTALL_DIR='${datarootdir}/vulkan/icd.d'])
 AC_SUBST([VULKAN_ICD_INSTALL_DIR])
 
 if test -n "$with_vulkan_drivers"; then
@@ -1980,6 +2041,9 @@ for plat in $egl_platforms; do
 			AC_MSG_ERROR([EGL platform surfaceless requires libdrm >= $LIBDRM_REQUIRED])
 		;;
 
+	android)
+		;;
+
 	*)
 		AC_MSG_ERROR([EGL platform '$plat' does not exist])
 		;;
@@ -2004,6 +2068,7 @@ AM_CONDITIONAL(HAVE_PLATFORM_X11, echo "$egl_platforms" | grep -q 'x11')
 AM_CONDITIONAL(HAVE_PLATFORM_WAYLAND, echo "$egl_platforms" | grep -q 'wayland')
 AM_CONDITIONAL(HAVE_EGL_PLATFORM_DRM, echo "$egl_platforms" | grep -q 'drm')
 AM_CONDITIONAL(HAVE_EGL_PLATFORM_SURFACELESS, echo "$egl_platforms" | grep -q 'surfaceless')
+AM_CONDITIONAL(HAVE_EGL_PLATFORM_ANDROID, echo "$egl_platforms" | grep -q 'android')
 
 AM_CONDITIONAL(HAVE_EGL_DRIVER_DRI2, test "x$HAVE_EGL_DRIVER_DRI2" != "x")
 
@@ -2044,6 +2109,9 @@ AC_ARG_WITH([llvm-prefix],
 strip_unwanted_llvm_flags() {
     # Use \> (marks the end of the word)
     echo `$1` | sed \
+	-e 's/-march=\S*//g' \
+	-e 's/-mtune=\S*//g' \
+	-e 's/-mcpu=\S*//g' \
 	-e 's/-DNDEBUG\>//g' \
 	-e 's/-D_GNU_SOURCE\>//g' \
 	-e 's/-pedantic\>//g' \
@@ -2121,7 +2189,7 @@ if test "x$enable_gallium_llvm" = xyes; then
         LLVM_COMPONENTS="engine bitwriter mcjit mcdisassembler"
 
         if test "x$enable_opencl" = xyes; then
-            llvm_check_version_for "3" "5" "0" "opencl"
+            llvm_check_version_for "3" "6" "0" "opencl"
 
             LLVM_COMPONENTS="${LLVM_COMPONENTS} all-targets ipo linker instrumentation"
             LLVM_COMPONENTS="${LLVM_COMPONENTS} irreader option objcarcopts profiledata"
@@ -2269,6 +2337,45 @@ swr_llvm_check() {
     fi
 }
 
+swr_require_cxx_feature_flags() {
+    feature_name="$1"
+    preprocessor_test="$2"
+    option_list="$3"
+    output_var="$4"
+
+    AC_MSG_CHECKING([whether $CXX supports $feature_name])
+    AC_LANG_PUSH([C++])
+    save_CXXFLAGS="$CXXFLAGS"
+    save_IFS="$IFS"
+    IFS=","
+    found=0
+    for opts in $option_list
+    do
+        unset IFS
+        CXXFLAGS="$opts $save_CXXFLAGS"
+        AC_COMPILE_IFELSE(
+            [AC_LANG_PROGRAM(
+                [   #if !($preprocessor_test)
+                    #error
+                    #endif
+                ])],
+            [found=1; break],
+            [])
+        IFS=","
+    done
+    IFS="$save_IFS"
+    CXXFLAGS="$save_CXXFLAGS"
+    AC_LANG_POP([C++])
+    if test $found -eq 1; then
+        AC_MSG_RESULT([$opts])
+        eval "$output_var=\$opts"
+        return 0
+    fi
+    AC_MSG_RESULT([no])
+    AC_MSG_ERROR([swr requires $feature_name support])
+    return 1
+}
+
 dnl Duplicates in GALLIUM_DRIVERS_DIRS are removed by sorting it after this block
 if test -n "$with_gallium_drivers"; then
     gallium_drivers=`IFS=', '; echo $with_gallium_drivers`
@@ -2338,34 +2445,26 @@ if test -n "$with_gallium_drivers"; then
         xswr)
             swr_llvm_check "swr"
 
-            AC_MSG_CHECKING([whether $CXX supports c++11/AVX/AVX2])
-            AVX_CXXFLAGS="-march=core-avx-i"
-            AVX2_CXXFLAGS="-march=core-avx2"
+            swr_require_cxx_feature_flags "C++11" "__cplusplus >= 201103L" \
+                ",-std=c++11" \
+                SWR_CXX11_CXXFLAGS
+            AC_SUBST([SWR_CXX11_CXXFLAGS])
 
-            AC_LANG_PUSH([C++])
-            save_CXXFLAGS="$CXXFLAGS"
-            CXXFLAGS="-std=c++11 $CXXFLAGS"
-            AC_COMPILE_IFELSE([AC_LANG_PROGRAM()],[],
-                              [AC_MSG_ERROR([c++11 compiler support not detected])])
-            CXXFLAGS="$save_CXXFLAGS"
+            swr_require_cxx_feature_flags "AVX" "defined(__AVX__)" \
+                ",-mavx,-march=core-avx" \
+                SWR_AVX_CXXFLAGS
+            AC_SUBST([SWR_AVX_CXXFLAGS])
 
-            save_CXXFLAGS="$CXXFLAGS"
-            CXXFLAGS="$AVX_CXXFLAGS $CXXFLAGS"
-            AC_COMPILE_IFELSE([AC_LANG_PROGRAM()],[],
-                              [AC_MSG_ERROR([AVX compiler support not detected])])
-            CXXFLAGS="$save_CXXFLAGS"
-
-            save_CFLAGS="$CXXFLAGS"
-            CXXFLAGS="$AVX2_CXXFLAGS $CXXFLAGS"
-            AC_COMPILE_IFELSE([AC_LANG_PROGRAM()],[],
-                              [AC_MSG_ERROR([AVX2 compiler support not detected])])
-            CXXFLAGS="$save_CXXFLAGS"
-            AC_LANG_POP([C++])
+            swr_require_cxx_feature_flags "AVX2" "defined(__AVX2__)" \
+                ",-mavx2 -mfma -mbmi2 -mf16c,-march=core-avx2" \
+                SWR_AVX2_CXXFLAGS
+            AC_SUBST([SWR_AVX2_CXXFLAGS])
 
             HAVE_GALLIUM_SWR=yes
             ;;
         xvc4)
             HAVE_GALLIUM_VC4=yes
+            PKG_CHECK_MODULES([VC4], [libdrm_vc4 >= $LIBDRM_VC4_REQUIRED])
             gallium_require_drm "vc4"
             gallium_require_drm_loader
 
@@ -2528,6 +2627,8 @@ AC_SUBST([XA_MAJOR], $XA_MAJOR)
 AC_SUBST([XA_MINOR], $XA_MINOR)
 AC_SUBST([XA_TINY], $XA_TINY)
 AC_SUBST([XA_VERSION], "$XA_MAJOR.$XA_MINOR.$XA_TINY")
+
+AC_SUBST([TIMESTAMP_CMD], '`test $(SOURCE_DATE_EPOCH) && echo $(SOURCE_DATE_EPOCH) || date +%s`')
 
 AC_ARG_ENABLE(valgrind,
               [AS_HELP_STRING([--enable-valgrind],
@@ -2809,7 +2910,6 @@ if test "x$MESA_LLVM" = x1; then
     echo ""
 fi
 echo "        PYTHON2:         $PYTHON2"
-echo "        PYTHON3:         $PYTHON3"
 
 echo ""
 echo "        Run '${MAKE-make}' to build Mesa"

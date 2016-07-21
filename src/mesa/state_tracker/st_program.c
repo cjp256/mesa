@@ -38,6 +38,8 @@
 #include "program/prog_print.h"
 #include "program/programopt.h"
 
+#include "compiler/nir/nir.h"
+
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_shader_tokens.h"
@@ -54,6 +56,7 @@
 #include "st_program.h"
 #include "st_mesa_to_tgsi.h"
 #include "st_atifs_to_tgsi.h"
+#include "st_nir.h"
 #include "cso_cache/cso_context.h"
 
 
@@ -70,10 +73,10 @@ delete_vp_variant(struct st_context *st, struct st_vp_variant *vpv)
       
    if (vpv->draw_shader)
       draw_delete_vertex_shader( st->draw, vpv->draw_shader );
-      
-   if (vpv->tgsi.tokens)
+
+   if (((vpv->tgsi.type == PIPE_SHADER_IR_TGSI)) && vpv->tgsi.tokens)
       ureg_free_tokens(vpv->tgsi.tokens);
-      
+
    free( vpv );
 }
 
@@ -96,7 +99,7 @@ st_release_vp_variants( struct st_context *st,
 
    stvp->variants = NULL;
 
-   if (stvp->tgsi.tokens) {
+   if ((stvp->tgsi.type == PIPE_SHADER_IR_TGSI) && stvp->tgsi.tokens) {
       tgsi_free_tokens(stvp->tgsi.tokens);
       stvp->tgsi.tokens = NULL;
    }
@@ -133,7 +136,7 @@ st_release_fp_variants(struct st_context *st, struct st_fragment_program *stfp)
 
    stfp->variants = NULL;
 
-   if (stfp->tgsi.tokens) {
+   if ((stfp->tgsi.type == PIPE_SHADER_IR_TGSI) && stfp->tgsi.tokens) {
       ureg_free_tokens(stfp->tgsi.tokens);
       stfp->tgsi.tokens = NULL;
    }
@@ -361,8 +364,22 @@ st_translate_vertex_program(struct st_context *st,
    output_semantic_name[num_outputs] = TGSI_SEMANTIC_EDGEFLAG;
    output_semantic_index[num_outputs] = 0;
 
-   if (!stvp->glsl_to_tgsi)
+   if (!stvp->glsl_to_tgsi && !stvp->shader_program)
       _mesa_remove_output_reads(&stvp->Base.Base, PROGRAM_OUTPUT);
+
+   if (stvp->shader_program) {
+      nir_shader *nir = st_glsl_to_nir(st, &stvp->Base.Base,
+                                       stvp->shader_program,
+                                       MESA_SHADER_VERTEX);
+
+      stvp->tgsi.type = PIPE_SHADER_IR_NIR;
+      stvp->tgsi.ir.nir = nir;
+
+      st_translate_stream_output_info2(&stvp->shader_program->LinkedTransformFeedback,
+                                       stvp->result_to_output,
+                                       &stvp->tgsi.stream_output);
+      return true;
+   }
 
    ureg = ureg_create_with_screen(PIPE_SHADER_VERTEX, st->pipe->screen);
    if (ureg == NULL)
@@ -446,9 +463,26 @@ st_create_vp_variant(struct st_context *st,
    struct pipe_context *pipe = st->pipe;
 
    vpv->key = *key;
-   vpv->tgsi.tokens = tgsi_dup_tokens(stvp->tgsi.tokens);
    vpv->tgsi.stream_output = stvp->tgsi.stream_output;
    vpv->num_inputs = stvp->num_inputs;
+
+   if (stvp->tgsi.type == PIPE_SHADER_IR_NIR) {
+      vpv->tgsi.type = PIPE_SHADER_IR_NIR;
+      vpv->tgsi.ir.nir = nir_shader_clone(NULL, stvp->tgsi.ir.nir);
+      if (key->clamp_color)
+         NIR_PASS_V(vpv->tgsi.ir.nir, nir_lower_clamp_color_outputs);
+      if (key->passthrough_edgeflags)
+         NIR_PASS_V(vpv->tgsi.ir.nir, nir_lower_passthrough_edgeflags);
+
+      st_finalize_nir(st, &stvp->Base.Base, vpv->tgsi.ir.nir);
+
+      vpv->driver_shader = pipe->create_vs_state(pipe, &vpv->tgsi);
+      /* driver takes ownership of IR: */
+      vpv->tgsi.ir.nir = NULL;
+      return vpv;
+   }
+
+   vpv->tgsi.tokens = tgsi_dup_tokens(stvp->tgsi.tokens);
 
    /* Emulate features. */
    if (key->clamp_color || key->passthrough_edgeflags) {
@@ -511,18 +545,18 @@ st_get_vp_variant(struct st_context *st,
 
 
 static unsigned
-st_translate_interp(enum glsl_interp_qualifier glsl_qual, bool is_color)
+st_translate_interp(enum glsl_interp_mode glsl_qual, bool is_color)
 {
    switch (glsl_qual) {
-   case INTERP_QUALIFIER_NONE:
+   case INTERP_MODE_NONE:
       if (is_color)
          return TGSI_INTERPOLATE_COLOR;
       return TGSI_INTERPOLATE_PERSPECTIVE;
-   case INTERP_QUALIFIER_SMOOTH:
+   case INTERP_MODE_SMOOTH:
       return TGSI_INTERPOLATE_PERSPECTIVE;
-   case INTERP_QUALIFIER_FLAT:
+   case INTERP_MODE_FLAT:
       return TGSI_INTERPOLATE_CONSTANT;
-   case INTERP_QUALIFIER_NOPERSPECTIVE:
+   case INTERP_MODE_NOPERSPECTIVE:
       return TGSI_INTERPOLATE_LINEAR;
    default:
       assert(0 && "unexpected interp mode in st_translate_interp()");
@@ -559,7 +593,7 @@ st_translate_fragment_program(struct st_context *st,
 
    memset(inputSlotToAttr, ~0, sizeof(inputSlotToAttr));
 
-   if (!stfp->glsl_to_tgsi) {
+   if (!stfp->glsl_to_tgsi && !stfp->shader_program) {
       _mesa_remove_output_reads(&stfp->Base.Base, PROGRAM_OUTPUT);
       if (st->ctx->Const.GLSLFragCoordIsSysVal)
          _mesa_program_fragment_position_to_sysval(&stfp->Base.Base);
@@ -767,6 +801,17 @@ st_translate_fragment_program(struct st_context *st,
       }
    }
 
+   if (stfp->shader_program) {
+      nir_shader *nir = st_glsl_to_nir(st, &stfp->Base.Base,
+                                       stfp->shader_program,
+                                       MESA_SHADER_FRAGMENT);
+
+      stfp->tgsi.type = PIPE_SHADER_IR_NIR;
+      stfp->tgsi.ir.nir = nir;
+
+      return true;
+   }
+
    ureg = ureg_create_with_screen(PIPE_SHADER_FRAGMENT, st->pipe->screen);
    if (ureg == NULL)
       return false;
@@ -870,9 +915,83 @@ st_create_fp_variant(struct st_context *st,
    struct pipe_context *pipe = st->pipe;
    struct st_fp_variant *variant = CALLOC_STRUCT(st_fp_variant);
    struct pipe_shader_state tgsi = {0};
+   struct gl_program_parameter_list *params = stfp->Base.Base.Parameters;
+   static const gl_state_index texcoord_state[STATE_LENGTH] =
+      { STATE_INTERNAL, STATE_CURRENT_ATTRIB, VERT_ATTRIB_TEX0 };
+   static const gl_state_index scale_state[STATE_LENGTH] =
+      { STATE_INTERNAL, STATE_PT_SCALE };
+   static const gl_state_index bias_state[STATE_LENGTH] =
+      { STATE_INTERNAL, STATE_PT_BIAS };
 
    if (!variant)
       return NULL;
+
+   if (stfp->tgsi.type == PIPE_SHADER_IR_NIR) {
+      tgsi.type = PIPE_SHADER_IR_NIR;
+      tgsi.ir.nir = nir_shader_clone(NULL, stfp->tgsi.ir.nir);
+
+      if (key->clamp_color)
+         NIR_PASS_V(tgsi.ir.nir, nir_lower_clamp_color_outputs);
+
+      if (key->persample_shading) {
+          nir_shader *shader = tgsi.ir.nir;
+          nir_foreach_variable(var, &shader->inputs)
+             var->data.sample = true;
+      }
+
+      assert(!(key->bitmap && key->drawpixels));
+
+      /* glBitmap */
+      if (key->bitmap) {
+         nir_lower_bitmap_options options = {0};
+
+         variant->bitmap_sampler = ffs(~stfp->Base.Base.SamplersUsed) - 1;
+         options.sampler = variant->bitmap_sampler;
+         options.swizzle_xxxx = (st->bitmap.tex_format == PIPE_FORMAT_L8_UNORM);
+
+         NIR_PASS_V(tgsi.ir.nir, nir_lower_bitmap, &options);
+      }
+
+      /* glDrawPixels (color only) */
+      if (key->drawpixels) {
+         nir_lower_drawpixels_options options = {0};
+         unsigned samplers_used = stfp->Base.Base.SamplersUsed;
+
+         /* Find the first unused slot. */
+         variant->drawpix_sampler = ffs(~samplers_used) - 1;
+         options.drawpix_sampler = variant->drawpix_sampler;
+         samplers_used |= (1 << variant->drawpix_sampler);
+
+         options.pixel_maps = key->pixelMaps;
+         if (key->pixelMaps) {
+            variant->pixelmap_sampler = ffs(~samplers_used) - 1;
+            options.pixelmap_sampler = variant->pixelmap_sampler;
+         }
+
+         options.scale_and_bias = key->scaleAndBias;
+         if (key->scaleAndBias) {
+            _mesa_add_state_reference(params, scale_state);
+            memcpy(options.scale_state_tokens, scale_state,
+                   sizeof(options.scale_state_tokens));
+            _mesa_add_state_reference(params, bias_state);
+            memcpy(options.bias_state_tokens, bias_state,
+                   sizeof(options.bias_state_tokens));
+         }
+
+         _mesa_add_state_reference(params, texcoord_state);
+         memcpy(options.texcoord_state_tokens, texcoord_state,
+                sizeof(options.texcoord_state_tokens));
+
+         NIR_PASS_V(tgsi.ir.nir, nir_lower_drawpixels, &options);
+      }
+
+      st_finalize_nir(st, &stfp->Base.Base, tgsi.ir.nir);
+
+      variant->driver_shader = pipe->create_fs_state(pipe, &tgsi);
+      variant->key = *key;
+
+      return variant;
+   }
 
    tgsi.tokens = stfp->tgsi.tokens;
 
@@ -930,7 +1049,6 @@ st_create_fp_variant(struct st_context *st,
    if (key->drawpixels) {
       const struct tgsi_token *tokens;
       unsigned scale_const = 0, bias_const = 0, texcoord_const = 0;
-      struct gl_program_parameter_list *params = stfp->Base.Base.Parameters;
 
       /* Find the first unused slot. */
       variant->drawpix_sampler = ffs(~stfp->Base.Base.SamplersUsed) - 1;
@@ -943,21 +1061,11 @@ st_create_fp_variant(struct st_context *st,
       }
 
       if (key->scaleAndBias) {
-         static const gl_state_index scale_state[STATE_LENGTH] =
-            { STATE_INTERNAL, STATE_PT_SCALE };
-         static const gl_state_index bias_state[STATE_LENGTH] =
-            { STATE_INTERNAL, STATE_PT_BIAS };
-
          scale_const = _mesa_add_state_reference(params, scale_state);
          bias_const = _mesa_add_state_reference(params, bias_state);
       }
 
-      {
-         static const gl_state_index state[STATE_LENGTH] =
-            { STATE_INTERNAL, STATE_CURRENT_ATTRIB, VERT_ATTRIB_TEX0 };
-
-         texcoord_const = _mesa_add_state_reference(params, state);
-      }
+      texcoord_const = _mesa_add_state_reference(params, texcoord_state);
 
       tokens = st_get_drawpix_shader(tgsi.tokens,
                                      st->needs_texcoord_semantic,
@@ -1648,10 +1756,6 @@ destroy_shader_program_variants_cb(GLuint key, void *data, void *userData)
          struct gl_shader_program *shProg = (struct gl_shader_program *) data;
          GLuint i;
 
-         for (i = 0; i < shProg->NumShaders; i++) {
-            destroy_program_variants(st, shProg->Shaders[i]->Program);
-         }
-
 	 for (i = 0; i < ARRAY_SIZE(shProg->_LinkedShaders); i++) {
 	    if (shProg->_LinkedShaders[i])
                destroy_program_variants(st, shProg->_LinkedShaders[i]->Program);
@@ -1664,9 +1768,6 @@ destroy_shader_program_variants_cb(GLuint key, void *data, void *userData)
    case GL_TESS_CONTROL_SHADER:
    case GL_TESS_EVALUATION_SHADER:
    case GL_COMPUTE_SHADER:
-      {
-         destroy_program_variants(st, shader->Program);
-      }
       break;
    default:
       assert(0);

@@ -29,6 +29,22 @@
 #include "nir/nir_vla.h"
 #include "nir/nir_control_flow.h"
 #include "nir/nir_constant_expressions.h"
+#include "spirv_info.h"
+
+void
+_vtn_warn(const char *file, int line, const char *msg, ...)
+{
+   char *formatted;
+   va_list args;
+
+   va_start(args, msg);
+   formatted = ralloc_vasprintf(NULL, msg, args);
+   va_end(args);
+
+   fprintf(stderr, "%s:%d WARNING: %s\n", file, line, formatted);
+
+   ralloc_free(formatted);
+}
 
 static struct vtn_ssa_value *
 vtn_undef_ssa_value(struct vtn_builder *b, const struct glsl_type *type)
@@ -455,13 +471,17 @@ struct_member_decoration_cb(struct vtn_builder *b,
 
    switch (dec->decoration) {
    case SpvDecorationNonWritable:
+   case SpvDecorationNonReadable:
    case SpvDecorationRelaxedPrecision:
+   case SpvDecorationVolatile:
+   case SpvDecorationCoherent:
+   case SpvDecorationUniform:
       break; /* FIXME: Do nothing with this for now. */
    case SpvDecorationNoPerspective:
-      ctx->fields[member].interpolation = INTERP_QUALIFIER_NOPERSPECTIVE;
+      ctx->fields[member].interpolation = INTERP_MODE_NOPERSPECTIVE;
       break;
    case SpvDecorationFlat:
-      ctx->fields[member].interpolation = INTERP_QUALIFIER_FLAT;
+      ctx->fields[member].interpolation = INTERP_MODE_FLAT;
       break;
    case SpvDecorationCentroid:
       ctx->fields[member].centroid = true;
@@ -469,9 +489,15 @@ struct_member_decoration_cb(struct vtn_builder *b,
    case SpvDecorationSample:
       ctx->fields[member].sample = true;
       break;
+   case SpvDecorationStream:
+      /* Vulkan only allows one GS stream */
+      assert(dec->literals[0] == 0);
+      break;
    case SpvDecorationLocation:
       ctx->fields[member].location = dec->literals[0];
       break;
+   case SpvDecorationComponent:
+      break; /* FIXME: What should we do with these? */
    case SpvDecorationBuiltIn:
       ctx->type->members[member] = vtn_type_copy(b, ctx->type->members[member]);
       ctx->type->members[member]->is_builtin = true;
@@ -489,8 +515,45 @@ struct_member_decoration_cb(struct vtn_builder *b,
    case SpvDecorationRowMajor:
       mutable_matrix_member(b, ctx->type, member)->row_major = true;
       break;
-   default:
-      unreachable("Unhandled member decoration");
+
+   case SpvDecorationPatch:
+      vtn_warn("Tessellation not yet supported");
+      break;
+
+   case SpvDecorationSpecId:
+   case SpvDecorationBlock:
+   case SpvDecorationBufferBlock:
+   case SpvDecorationArrayStride:
+   case SpvDecorationGLSLShared:
+   case SpvDecorationGLSLPacked:
+   case SpvDecorationInvariant:
+   case SpvDecorationRestrict:
+   case SpvDecorationAliased:
+   case SpvDecorationConstant:
+   case SpvDecorationIndex:
+   case SpvDecorationBinding:
+   case SpvDecorationDescriptorSet:
+   case SpvDecorationLinkageAttributes:
+   case SpvDecorationNoContraction:
+   case SpvDecorationInputAttachmentIndex:
+      vtn_warn("Decoration not allowed on struct members: %s",
+               spirv_decoration_to_string(dec->decoration));
+      break;
+
+   case SpvDecorationXfbBuffer:
+   case SpvDecorationXfbStride:
+      vtn_warn("Vulkan does not have transform feedback");
+      break;
+
+   case SpvDecorationCPacked:
+   case SpvDecorationSaturatedConversion:
+   case SpvDecorationFuncParamAttr:
+   case SpvDecorationFPRoundingMode:
+   case SpvDecorationFPFastMathMode:
+   case SpvDecorationAlignment:
+      vtn_warn("Decoraiton only allowed for CL-style kernels: %s",
+               spirv_decoration_to_string(dec->decoration));
+      break;
    }
 }
 
@@ -519,12 +582,55 @@ type_decoration_cb(struct vtn_builder *b,
       /* Ignore these, since we get explicit offsets anyways */
       break;
 
+   case SpvDecorationRowMajor:
+   case SpvDecorationColMajor:
+   case SpvDecorationMatrixStride:
+   case SpvDecorationBuiltIn:
+   case SpvDecorationNoPerspective:
+   case SpvDecorationFlat:
+   case SpvDecorationPatch:
+   case SpvDecorationCentroid:
+   case SpvDecorationSample:
+   case SpvDecorationVolatile:
+   case SpvDecorationCoherent:
+   case SpvDecorationNonWritable:
+   case SpvDecorationNonReadable:
+   case SpvDecorationUniform:
    case SpvDecorationStream:
-      assert(dec->literals[0] == 0);
+   case SpvDecorationLocation:
+   case SpvDecorationComponent:
+   case SpvDecorationOffset:
+   case SpvDecorationXfbBuffer:
+   case SpvDecorationXfbStride:
+      vtn_warn("Decoraiton only allowed for struct members: %s",
+               spirv_decoration_to_string(dec->decoration));
       break;
 
-   default:
-      unreachable("Unhandled type decoration");
+   case SpvDecorationRelaxedPrecision:
+   case SpvDecorationSpecId:
+   case SpvDecorationInvariant:
+   case SpvDecorationRestrict:
+   case SpvDecorationAliased:
+   case SpvDecorationConstant:
+   case SpvDecorationIndex:
+   case SpvDecorationBinding:
+   case SpvDecorationDescriptorSet:
+   case SpvDecorationLinkageAttributes:
+   case SpvDecorationNoContraction:
+   case SpvDecorationInputAttachmentIndex:
+      vtn_warn("Decoraiton not allowed on types: %s",
+               spirv_decoration_to_string(dec->decoration));
+      break;
+
+   case SpvDecorationCPacked:
+   case SpvDecorationSaturatedConversion:
+   case SpvDecorationFuncParamAttr:
+   case SpvDecorationFPRoundingMode:
+   case SpvDecorationFPFastMathMode:
+   case SpvDecorationAlignment:
+      vtn_warn("Decoraiton only allowed for CL-style kernels: %s",
+               spirv_decoration_to_string(dec->decoration));
+      break;
    }
 }
 
@@ -852,6 +958,25 @@ get_specialization(struct vtn_builder *b, struct vtn_value *val,
 }
 
 static void
+handle_workgroup_size_decoration_cb(struct vtn_builder *b,
+                                    struct vtn_value *val,
+                                    int member,
+                                    const struct vtn_decoration *dec,
+                                    void *data)
+{
+   assert(member == -1);
+   if (dec->decoration != SpvDecorationBuiltIn ||
+       dec->literals[0] != SpvBuiltInWorkgroupSize)
+      return;
+
+   assert(val->const_type == glsl_vector_type(GLSL_TYPE_UINT, 3));
+
+   b->shader->info.cs.local_size[0] = val->constant->value.u[0];
+   b->shader->info.cs.local_size[1] = val->constant->value.u[1];
+   b->shader->info.cs.local_size[2] = val->constant->value.u[2];
+}
+
+static void
 vtn_handle_constant(struct vtn_builder *b, SpvOp opcode,
                     const uint32_t *w, unsigned count)
 {
@@ -948,7 +1073,7 @@ vtn_handle_constant(struct vtn_builder *b, SpvOp opcode,
                val->constant->value.u[i] = u[comp];
             }
          }
-         return;
+         break;
       }
 
       case SpvOpCompositeExtract:
@@ -1025,7 +1150,7 @@ vtn_handle_constant(struct vtn_builder *b, SpvOp opcode,
                   (*c)->value.u[elem + i] = insert->constant->value.u[i];
             }
          }
-         return;
+         break;
       }
 
       default: {
@@ -1036,7 +1161,7 @@ vtn_handle_constant(struct vtn_builder *b, SpvOp opcode,
          unsigned bit_size =
             glsl_get_bit_size(val->const_type);
 
-         nir_const_value src[3];
+         nir_const_value src[4];
          assert(count <= 7);
          for (unsigned i = 0; i < count - 4; i++) {
             nir_constant *c =
@@ -1054,9 +1179,10 @@ vtn_handle_constant(struct vtn_builder *b, SpvOp opcode,
          for (unsigned k = 0; k < num_components; k++)
             val->constant->value.u[k] = res.u32[k];
 
-         return;
+         break;
       } /* default */
       }
+      break;
    }
 
    case SpvOpConstantNull:
@@ -1070,6 +1196,9 @@ vtn_handle_constant(struct vtn_builder *b, SpvOp opcode,
    default:
       unreachable("Unhandled opcode");
    }
+
+   /* Now that we have the value, update the workgroup size if needed */
+   vtn_foreach_decoration(b, val, handle_workgroup_size_decoration_cb, NULL);
 }
 
 static void
@@ -1413,6 +1542,8 @@ vtn_handle_texture(struct vtn_builder *b, SpvOp opcode,
       /* These don't */
       instr->sampler = NULL;
       break;
+   case nir_texop_txf_ms_mcs:
+      unreachable("unexpected nir_texop_txf_ms_mcs");
    }
 
    nir_ssa_dest_init(&instr->instr, &instr->dest,
@@ -2161,7 +2292,6 @@ vtn_handle_preamble_instruction(struct vtn_builder *b, SpvOp opcode,
       case SpvCapabilityMatrix:
       case SpvCapabilityShader:
       case SpvCapabilityGeometry:
-      case SpvCapabilityTessellationPointSize:
       case SpvCapabilityGeometryPointSize:
       case SpvCapabilityUniformBufferArrayDynamicIndexing:
       case SpvCapabilitySampledImageArrayDynamicIndexing:
@@ -2175,14 +2305,55 @@ vtn_handle_preamble_instruction(struct vtn_builder *b, SpvOp opcode,
       case SpvCapabilitySampledBuffer:
       case SpvCapabilityImageBuffer:
       case SpvCapabilityImageQuery:
+      case SpvCapabilityDerivativeControl:
+      case SpvCapabilityInterpolationFunction:
+      case SpvCapabilityMultiViewport:
          break;
+
       case SpvCapabilityClipDistance:
       case SpvCapabilityCullDistance:
       case SpvCapabilityGeometryStreams:
-         fprintf(stderr, "WARNING: Unsupported SPIR-V Capability\n");
+      case SpvCapabilityTessellation:
+      case SpvCapabilityTessellationPointSize:
+      case SpvCapabilityLinkage:
+      case SpvCapabilityVector16:
+      case SpvCapabilityFloat16Buffer:
+      case SpvCapabilityFloat16:
+      case SpvCapabilityFloat64:
+      case SpvCapabilityInt64:
+      case SpvCapabilityInt64Atomics:
+      case SpvCapabilityAtomicStorage:
+      case SpvCapabilityInt16:
+      case SpvCapabilityImageGatherExtended:
+      case SpvCapabilityStorageImageMultisample:
+      case SpvCapabilityImageCubeArray:
+      case SpvCapabilitySampleRateShading:
+      case SpvCapabilityInt8:
+      case SpvCapabilityInputAttachment:
+      case SpvCapabilitySparseResidency:
+      case SpvCapabilityMinLod:
+      case SpvCapabilityImageMSArray:
+      case SpvCapabilityStorageImageExtendedFormats:
+      case SpvCapabilityTransformFeedback:
+      case SpvCapabilityStorageImageReadWithoutFormat:
+      case SpvCapabilityStorageImageWriteWithoutFormat:
+         vtn_warn("Unsupported SPIR-V capability: %s",
+                  spirv_capability_to_string(cap));
          break;
-      default:
-         assert(!"Unsupported capability");
+
+      case SpvCapabilityAddresses:
+      case SpvCapabilityKernel:
+      case SpvCapabilityImageBasic:
+      case SpvCapabilityImageReadWrite:
+      case SpvCapabilityImageMipmap:
+      case SpvCapabilityPipes:
+      case SpvCapabilityGroups:
+      case SpvCapabilityDeviceEnqueue:
+      case SpvCapabilityLiteralSampler:
+      case SpvCapabilityGenericPointer:
+         vtn_warn("Unsupported OpenCL-style SPIR-V capability: %s",
+                  spirv_capability_to_string(cap));
+         break;
       }
       break;
    }
@@ -2287,7 +2458,7 @@ vtn_handle_execution_mode(struct vtn_builder *b, struct vtn_value *entry_point,
       b->shader->info.cs.local_size[2] = mode->literals[2];
       break;
    case SpvExecutionModeLocalSizeHint:
-      break; /* Nothing do do with this */
+      break; /* Nothing to do with this */
 
    case SpvExecutionModeOutputVertices:
       assert(b->shader->stage == MESA_SHADER_GEOMETRY);
@@ -2327,6 +2498,9 @@ vtn_handle_execution_mode(struct vtn_builder *b, struct vtn_value *entry_point,
       break;
 
    case SpvExecutionModePixelCenterInteger:
+      b->pixel_center_integer = true;
+      break;
+
    case SpvExecutionModeXfb:
       assert(!"Unhandled execution mode");
       break;

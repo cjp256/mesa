@@ -1012,6 +1012,8 @@ const struct TexInstruction::ImgFormatDesc TexInstruction::formatTable[] =
    { "RG8_SNORM",    2, {  8,  8,  0,  0 }, SNORM },
    { "R16_SNORM",    1, { 16,  0,  0,  0 }, SNORM },
    { "R8_SNORM",     1, {  8,  0,  0,  0 }, SNORM },
+
+   { "BGRA8",        4, {  8,  8,  8,  8 }, UNORM, true },
 };
 
 void
@@ -1170,16 +1172,15 @@ extern "C" {
 static void
 nv50_ir_init_prog_info(struct nv50_ir_prog_info *info)
 {
-#if defined(PIPE_SHADER_HULL) && defined(PIPE_SHADER_DOMAIN)
-   if (info->type == PIPE_SHADER_HULL || info->type == PIPE_SHADER_DOMAIN) {
+   if (info->type == PIPE_SHADER_TESS_CTRL || info->type == PIPE_SHADER_TESS_EVAL) {
       info->prop.tp.domain = PIPE_PRIM_MAX;
       info->prop.tp.outputPrim = PIPE_PRIM_MAX;
    }
-#endif
    if (info->type == PIPE_SHADER_GEOMETRY) {
       info->prop.gp.instanceCount = 1;
       info->prop.gp.maxVertices = 1;
    }
+   info->prop.cp.numThreads = 1;
    info->io.pointSize = 0xff;
    info->io.instanceId = 0xff;
    info->io.vertexId = 0xff;

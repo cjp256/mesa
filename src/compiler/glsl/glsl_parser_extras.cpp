@@ -74,6 +74,7 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
    /* Set default language version and extensions */
    this->language_version = 110;
    this->forced_language_version = ctx->Const.ForceGLSLVersion;
+   this->zero_init = ctx->Const.GLSLZeroInit;
    this->es_shader = false;
    this->ARB_texture_rectangle_enable = true;
 
@@ -594,6 +595,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(ARB_shader_bit_encoding,          true,  false,     ARB_shader_bit_encoding),
    EXT(ARB_shader_clock,                 true,  false,     ARB_shader_clock),
    EXT(ARB_shader_draw_parameters,       true,  false,     ARB_shader_draw_parameters),
+   EXT(ARB_shader_group_vote,            true,  false,     ARB_shader_group_vote),
    EXT(ARB_shader_image_load_store,      true,  false,     ARB_shader_image_load_store),
    EXT(ARB_shader_image_size,            true,  false,     ARB_shader_image_size),
    EXT(ARB_shader_precision,             true,  false,     ARB_shader_precision),
@@ -626,6 +628,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(OES_gpu_shader5,                false, true,      ARB_gpu_shader5),
    EXT(OES_sample_variables,           false, true,      OES_sample_variables),
    EXT(OES_shader_image_atomic,        false, true,      ARB_shader_image_load_store),
+   EXT(OES_shader_io_blocks,           false, true,      OES_shader_io_blocks),
    EXT(OES_shader_multisample_interpolation, false, true, OES_sample_variables),
    EXT(OES_standard_derivatives,       false, true,      OES_standard_derivatives),
    EXT(OES_texture_3D,                 false, true,      dummy_true),
@@ -641,12 +644,15 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(AMD_vertex_shader_viewport_index, true,  false,   AMD_vertex_shader_viewport_index),
    EXT(EXT_blend_func_extended,        false,  true,     ARB_blend_func_extended),
    EXT(EXT_draw_buffers,               false,  true,     dummy_true),
+   EXT(EXT_clip_cull_distance,         false, true,      ARB_cull_distance),
    EXT(EXT_gpu_shader5,                false, true,      ARB_gpu_shader5),
    EXT(EXT_separate_shader_objects,    false, true,      dummy_true),
    EXT(EXT_shader_integer_mix,         true,  true,      EXT_shader_integer_mix),
+   EXT(EXT_shader_io_blocks,           false, true,      OES_shader_io_blocks),
    EXT(EXT_shader_samples_identical,   true,  true,      EXT_shader_samples_identical),
    EXT(EXT_texture_array,              true,  false,     EXT_texture_array),
    EXT(EXT_texture_buffer,             false, true,      OES_texture_buffer),
+   EXT(MESA_shader_integer_functions,  true,  true,      MESA_shader_integer_functions),
 };
 
 #undef EXT
@@ -892,10 +898,16 @@ _mesa_ast_process_interface_block(YYLTYPE *locp,
                             "required for defining uniform blocks");
       }
    } else {
-      if (state->es_shader || state->language_version < 150) {
-         _mesa_glsl_error(locp, state,
-                          "#version 150 required for using "
-                          "interface blocks");
+      if (!state->has_shader_io_blocks()) {
+         if (state->es_shader) {
+            _mesa_glsl_error(locp, state,
+                             "GL_OES_shader_io_blocks or #version 320 "
+                             "required for using interface blocks");
+         } else {
+            _mesa_glsl_error(locp, state,
+                             "#version 150 required for using "
+                             "interface blocks");
+         }
       }
    }
 
@@ -1593,6 +1605,7 @@ ast_struct_specifier::ast_struct_specifier(const char *identifier,
    name = identifier;
    this->declarations.push_degenerate_list_at_head(&declarator_list->link);
    is_declaration = true;
+   layout = NULL;
 }
 
 void ast_subroutine_list::print(void) const
@@ -1637,14 +1650,14 @@ set_shader_inout_layout(struct gl_shader *shader,
          if (state->out_qualifier->out_xfb_stride[i]->
                 process_qualifier_constant(state, "xfb_stride", &xfb_stride,
                 true)) {
-            shader->TransformFeedback.BufferStride[i] = xfb_stride;
+            shader->info.TransformFeedback.BufferStride[i] = xfb_stride;
          }
       }
    }
 
    switch (shader->Stage) {
    case MESA_SHADER_TESS_CTRL:
-      shader->TessCtrl.VerticesOut = 0;
+      shader->info.TessCtrl.VerticesOut = 0;
       if (state->tcs_output_vertices_specified) {
          unsigned vertices;
          if (state->out_qualifier->vertices->
@@ -1656,34 +1669,34 @@ set_shader_inout_layout(struct gl_shader *shader,
                _mesa_glsl_error(&loc, state, "vertices (%d) exceeds "
                                 "GL_MAX_PATCH_VERTICES", vertices);
             }
-            shader->TessCtrl.VerticesOut = vertices;
+            shader->info.TessCtrl.VerticesOut = vertices;
          }
       }
       break;
    case MESA_SHADER_TESS_EVAL:
-      shader->TessEval.PrimitiveMode = PRIM_UNKNOWN;
+      shader->info.TessEval.PrimitiveMode = PRIM_UNKNOWN;
       if (state->in_qualifier->flags.q.prim_type)
-         shader->TessEval.PrimitiveMode = state->in_qualifier->prim_type;
+         shader->info.TessEval.PrimitiveMode = state->in_qualifier->prim_type;
 
-      shader->TessEval.Spacing = 0;
+      shader->info.TessEval.Spacing = 0;
       if (state->in_qualifier->flags.q.vertex_spacing)
-         shader->TessEval.Spacing = state->in_qualifier->vertex_spacing;
+         shader->info.TessEval.Spacing = state->in_qualifier->vertex_spacing;
 
-      shader->TessEval.VertexOrder = 0;
+      shader->info.TessEval.VertexOrder = 0;
       if (state->in_qualifier->flags.q.ordering)
-         shader->TessEval.VertexOrder = state->in_qualifier->ordering;
+         shader->info.TessEval.VertexOrder = state->in_qualifier->ordering;
 
-      shader->TessEval.PointMode = -1;
+      shader->info.TessEval.PointMode = -1;
       if (state->in_qualifier->flags.q.point_mode)
-         shader->TessEval.PointMode = state->in_qualifier->point_mode;
+         shader->info.TessEval.PointMode = state->in_qualifier->point_mode;
       break;
    case MESA_SHADER_GEOMETRY:
-      shader->Geom.VerticesOut = 0;
+      shader->info.Geom.VerticesOut = -1;
       if (state->out_qualifier->flags.q.max_vertices) {
          unsigned qual_max_vertices;
          if (state->out_qualifier->max_vertices->
                process_qualifier_constant(state, "max_vertices",
-                                          &qual_max_vertices, true)) {
+                                          &qual_max_vertices, true, true)) {
 
             if (qual_max_vertices > state->Const.MaxGeometryOutputVertices) {
                YYLTYPE loc = state->out_qualifier->max_vertices->get_location();
@@ -1692,23 +1705,23 @@ set_shader_inout_layout(struct gl_shader *shader,
                                 "GL_MAX_GEOMETRY_OUTPUT_VERTICES",
                                 qual_max_vertices);
             }
-            shader->Geom.VerticesOut = qual_max_vertices;
+            shader->info.Geom.VerticesOut = qual_max_vertices;
          }
       }
 
       if (state->gs_input_prim_type_specified) {
-         shader->Geom.InputType = state->in_qualifier->prim_type;
+         shader->info.Geom.InputType = state->in_qualifier->prim_type;
       } else {
-         shader->Geom.InputType = PRIM_UNKNOWN;
+         shader->info.Geom.InputType = PRIM_UNKNOWN;
       }
 
       if (state->out_qualifier->flags.q.prim_type) {
-         shader->Geom.OutputType = state->out_qualifier->prim_type;
+         shader->info.Geom.OutputType = state->out_qualifier->prim_type;
       } else {
-         shader->Geom.OutputType = PRIM_UNKNOWN;
+         shader->info.Geom.OutputType = PRIM_UNKNOWN;
       }
 
-      shader->Geom.Invocations = 0;
+      shader->info.Geom.Invocations = 0;
       if (state->in_qualifier->flags.q.invocations) {
          unsigned invocations;
          if (state->in_qualifier->invocations->
@@ -1722,7 +1735,7 @@ set_shader_inout_layout(struct gl_shader *shader,
                                 "GL_MAX_GEOMETRY_SHADER_INVOCATIONS",
                                 invocations);
             }
-            shader->Geom.Invocations = invocations;
+            shader->info.Geom.Invocations = invocations;
          }
       }
       break;
@@ -1730,21 +1743,22 @@ set_shader_inout_layout(struct gl_shader *shader,
    case MESA_SHADER_COMPUTE:
       if (state->cs_input_local_size_specified) {
          for (int i = 0; i < 3; i++)
-            shader->Comp.LocalSize[i] = state->cs_input_local_size[i];
+            shader->info.Comp.LocalSize[i] = state->cs_input_local_size[i];
       } else {
          for (int i = 0; i < 3; i++)
-            shader->Comp.LocalSize[i] = 0;
+            shader->info.Comp.LocalSize[i] = 0;
       }
       break;
 
    case MESA_SHADER_FRAGMENT:
-      shader->redeclares_gl_fragcoord = state->fs_redeclares_gl_fragcoord;
-      shader->uses_gl_fragcoord = state->fs_uses_gl_fragcoord;
-      shader->pixel_center_integer = state->fs_pixel_center_integer;
-      shader->origin_upper_left = state->fs_origin_upper_left;
-      shader->ARB_fragment_coord_conventions_enable =
+      shader->info.redeclares_gl_fragcoord =
+         state->fs_redeclares_gl_fragcoord;
+      shader->info.uses_gl_fragcoord = state->fs_uses_gl_fragcoord;
+      shader->info.pixel_center_integer = state->fs_pixel_center_integer;
+      shader->info.origin_upper_left = state->fs_origin_upper_left;
+      shader->info.ARB_fragment_coord_conventions_enable =
          state->ARB_fragment_coord_conventions_enable;
-      shader->EarlyFragmentTests = state->fs_early_fragment_tests;
+      shader->info.EarlyFragmentTests = state->fs_early_fragment_tests;
       break;
 
    default:
@@ -1754,6 +1768,27 @@ set_shader_inout_layout(struct gl_shader *shader,
 }
 
 extern "C" {
+
+static void
+assign_subroutine_indexes(struct gl_shader *sh,
+			  struct _mesa_glsl_parse_state *state)
+{
+   int j, k;
+   int index = 0;
+
+   for (j = 0; j < state->num_subroutines; j++) {
+      while (state->subroutines[j]->subroutine_index == -1) {
+         for (k = 0; k < state->num_subroutines; k++) {
+            if (state->subroutines[k]->subroutine_index == index)
+               break;
+            else if (k == state->num_subroutines - 1) {
+               state->subroutines[j]->subroutine_index = index;
+            }
+         }
+         index++;
+      }
+   }
+}
 
 void
 _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
@@ -1802,6 +1837,7 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
       struct gl_shader_compiler_options *options =
          &ctx->Const.ShaderCompilerOptions[shader->Stage];
 
+      assign_subroutine_indexes(shader, state);
       lower_subroutine(shader->ir, state);
       /* Do some optimization at compile time to reduce shader IR size
        * and reduce later work if the same shader is linked multiple times
@@ -1844,7 +1880,7 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
    shader->InfoLog = state->info_log;
    shader->Version = state->language_version;
    shader->IsES = state->es_shader;
-   shader->uses_builtin_functions = state->uses_builtin_functions;
+   shader->info.uses_builtin_functions = state->uses_builtin_functions;
 
    /* Retain any live IR, but trash the rest. */
    reparent_ir(shader->ir, shader->ir);
@@ -1876,7 +1912,7 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
       }
    }
 
-   _mesa_glsl_initialize_derived_variables(shader);
+   _mesa_glsl_initialize_derived_variables(ctx, shader);
 
    delete state->symbols;
    ralloc_free(state);

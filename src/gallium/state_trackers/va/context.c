@@ -114,7 +114,6 @@ VA_DRIVER_INIT_FUNC(VADriverContextP ctx)
 
    switch (ctx->display_type) {
    case VA_DISPLAY_ANDROID:
-   case VA_DISPLAY_WAYLAND:
       FREE(drv);
       return VA_STATUS_ERROR_UNIMPLEMENTED;
    case VA_DISPLAY_GLX:
@@ -127,6 +126,7 @@ VA_DRIVER_INIT_FUNC(VADriverContextP ctx)
       if (!drv->vscreen)
          goto error_screen;
       break;
+   case VA_DISPLAY_WAYLAND:
    case VA_DISPLAY_DRM:
    case VA_DISPLAY_DRM_RENDERNODES: {
       drm_info = (struct drm_state *) ctx->drm_state;
@@ -159,7 +159,7 @@ VA_DRIVER_INIT_FUNC(VADriverContextP ctx)
    vl_compositor_init_state(&drv->cstate, drv->pipe);
 
    vl_csc_get_matrix(VL_CSC_COLOR_STANDARD_BT_601, NULL, true, &drv->csc);
-   vl_compositor_set_csc_matrix(&drv->cstate, (const vl_csc_matrix *)&drv->csc);
+   vl_compositor_set_csc_matrix(&drv->cstate, (const vl_csc_matrix *)&drv->csc, 1.0f, 0.0f);
    pipe_mutex_init(drv->mutex);
 
    ctx->pDriverData = (void *)drv;

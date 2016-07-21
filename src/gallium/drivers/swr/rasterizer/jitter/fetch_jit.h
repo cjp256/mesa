@@ -80,11 +80,13 @@ enum ComponentEnable
 
 enum ComponentControl
 {
-    NoStore     = 0,
-    StoreSrc    = 1,
-    Store0      = 2,
-    Store1Fp    = 3,
-    Store1Int   = 4,
+    NoStore         = 0,
+    StoreSrc        = 1,
+    Store0          = 2,
+    Store1Fp        = 3,
+    Store1Int       = 4,
+    StoreVertexId   = 5,
+    StoreInstanceId = 6
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -102,8 +104,8 @@ struct FETCH_COMPILE_STATE
     bool bDisableIndexOOBCheck;     // if enabled, FetchJit will exclude index OOB check
     bool bEnableCutIndex{ false };  // compares indices with the cut index and returns a cut mask
 
-    FETCH_COMPILE_STATE(bool useVGATHER = false, bool indexOOBCheck = false) :
-        bDisableVGATHER(useVGATHER), bDisableIndexOOBCheck(indexOOBCheck){};
+    FETCH_COMPILE_STATE(bool disableVGATHER = false, bool diableIndexOOBCheck = false):
+        bDisableVGATHER(disableVGATHER), bDisableIndexOOBCheck(diableIndexOOBCheck){ };
 
     bool operator==(const FETCH_COMPILE_STATE &other) const
     {

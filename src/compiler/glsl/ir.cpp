@@ -341,6 +341,12 @@ ir_expression::ir_expression(int op, ir_rvalue *op0)
       this->type = glsl_type::int_type;
       break;
 
+   case ir_unop_vote_any:
+   case ir_unop_vote_all:
+   case ir_unop_vote_eq:
+      this->type = glsl_type::bool_type;
+      break;
+
    default:
       assert(!"not reached: missing automatic type setup for ir_expression");
       this->type = op0->type;
@@ -563,6 +569,9 @@ static const char *const operator_strs[] = {
    "interpolate_at_centroid",
    "get_buffer_size",
    "ssbo_unsized_array_length",
+   "vote_any",
+   "vote_all",
+   "vote_eq",
    "+",
    "-",
    "*",
@@ -1667,8 +1676,8 @@ ir_variable::ir_variable(const struct glsl_type *type, const char *name,
    this->data.invariant = false;
    this->data.how_declared = ir_var_declared_normally;
    this->data.mode = mode;
-   this->data.interpolation = INTERP_QUALIFIER_NONE;
-   this->data.max_array_access = 0;
+   this->data.interpolation = INTERP_MODE_NONE;
+   this->data.max_array_access = -1;
    this->data.offset = 0;
    this->data.precision = GLSL_PRECISION_NONE;
    this->data.image_read_only = false;
@@ -1694,10 +1703,10 @@ const char *
 interpolation_string(unsigned interpolation)
 {
    switch (interpolation) {
-   case INTERP_QUALIFIER_NONE:          return "no";
-   case INTERP_QUALIFIER_SMOOTH:        return "smooth";
-   case INTERP_QUALIFIER_FLAT:          return "flat";
-   case INTERP_QUALIFIER_NOPERSPECTIVE: return "noperspective";
+   case INTERP_MODE_NONE:          return "no";
+   case INTERP_MODE_SMOOTH:        return "smooth";
+   case INTERP_MODE_FLAT:          return "flat";
+   case INTERP_MODE_NOPERSPECTIVE: return "noperspective";
    }
 
    assert(!"Should not get here.");

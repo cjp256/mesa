@@ -27,24 +27,7 @@
 #include "brw_fs.h"
 #include "brw_nir.h"
 #include "brw_vec4_tes.h"
-#include "main/shaderobj.h"
 #include "main/uniforms.h"
-
-extern "C" struct gl_shader *
-brw_new_shader(struct gl_context *ctx, GLuint name, GLuint type)
-{
-   struct brw_shader *shader;
-
-   shader = rzalloc(NULL, struct brw_shader);
-   if (shader) {
-      shader->base.Type = type;
-      shader->base.Stage = _mesa_shader_enum_to_shader_stage(type);
-      shader->base.Name = name;
-      _mesa_init_shader(ctx, &shader->base);
-   }
-
-   return &shader->base;
-}
 
 extern "C" void
 brw_mark_surface_used(struct brw_stage_prog_data *prog_data,
@@ -180,8 +163,6 @@ brw_instruction_name(const struct brw_device_info *devinfo, enum opcode op)
       return "fb_write";
    case FS_OPCODE_FB_WRITE_LOGICAL:
       return "fb_write_logical";
-   case FS_OPCODE_PACK_STENCIL_REF:
-      return "pack_stencil_ref";
    case FS_OPCODE_REP_FB_WRITE:
       return "rep_fb_write";
 
@@ -218,10 +199,14 @@ brw_instruction_name(const struct brw_device_info *devinfo, enum opcode op)
       return "txf";
    case SHADER_OPCODE_TXF_LOGICAL:
       return "txf_logical";
+   case SHADER_OPCODE_TXF_LZ:
+      return "txf_lz";
    case SHADER_OPCODE_TXL:
       return "txl";
    case SHADER_OPCODE_TXL_LOGICAL:
       return "txl_logical";
+   case SHADER_OPCODE_TXL_LZ:
+      return "txl_lz";
    case SHADER_OPCODE_TXS:
       return "txs";
    case SHADER_OPCODE_TXS_LOGICAL:
@@ -260,6 +245,8 @@ brw_instruction_name(const struct brw_device_info *devinfo, enum opcode op)
       return "tg4_offset_logical";
    case SHADER_OPCODE_SAMPLEINFO:
       return "sampleinfo";
+   case SHADER_OPCODE_SAMPLEINFO_LOGICAL:
+      return "sampleinfo_logical";
 
    case SHADER_OPCODE_SHADER_TIME_ADD:
       return "shader_time_add";
@@ -320,10 +307,6 @@ brw_instruction_name(const struct brw_device_info *devinfo, enum opcode op)
    case SHADER_OPCODE_BROADCAST:
       return "broadcast";
 
-   case SHADER_OPCODE_EXTRACT_BYTE:
-      return "extract_byte";
-   case SHADER_OPCODE_EXTRACT_WORD:
-      return "extract_word";
    case VEC4_OPCODE_MOV_BYTES:
       return "mov_bytes";
    case VEC4_OPCODE_PACK_BYTES:
@@ -357,10 +340,12 @@ brw_instruction_name(const struct brw_device_info *devinfo, enum opcode op)
       return "uniform_pull_const";
    case FS_OPCODE_UNIFORM_PULL_CONSTANT_LOAD_GEN7:
       return "uniform_pull_const_gen7";
-   case FS_OPCODE_VARYING_PULL_CONSTANT_LOAD:
-      return "varying_pull_const";
+   case FS_OPCODE_VARYING_PULL_CONSTANT_LOAD_GEN4:
+      return "varying_pull_const_gen4";
    case FS_OPCODE_VARYING_PULL_CONSTANT_LOAD_GEN7:
       return "varying_pull_const_gen7";
+   case FS_OPCODE_VARYING_PULL_CONSTANT_LOAD_LOGICAL:
+      return "varying_pull_const_logical";
 
    case FS_OPCODE_MOV_DISPATCH_TO_FLAGS:
       return "mov_dispatch_to_flags";
@@ -382,8 +367,6 @@ brw_instruction_name(const struct brw_device_info *devinfo, enum opcode op)
    case FS_OPCODE_PLACEHOLDER_HALT:
       return "placeholder_halt";
 
-   case FS_OPCODE_INTERPOLATE_AT_CENTROID:
-      return "interp_centroid";
    case FS_OPCODE_INTERPOLATE_AT_SAMPLE:
       return "interp_sample";
    case FS_OPCODE_INTERPOLATE_AT_SHARED_OFFSET:
@@ -802,11 +785,13 @@ backend_instruction::is_tex() const
            opcode == FS_OPCODE_TXB ||
            opcode == SHADER_OPCODE_TXD ||
            opcode == SHADER_OPCODE_TXF ||
+           opcode == SHADER_OPCODE_TXF_LZ ||
            opcode == SHADER_OPCODE_TXF_CMS ||
            opcode == SHADER_OPCODE_TXF_CMS_W ||
            opcode == SHADER_OPCODE_TXF_UMS ||
            opcode == SHADER_OPCODE_TXF_MCS ||
            opcode == SHADER_OPCODE_TXL ||
+           opcode == SHADER_OPCODE_TXL_LZ ||
            opcode == SHADER_OPCODE_TXS ||
            opcode == SHADER_OPCODE_LOD ||
            opcode == SHADER_OPCODE_TG4 ||
@@ -998,6 +983,7 @@ backend_instruction::has_side_effects() const
    case SHADER_OPCODE_URB_WRITE_SIMD8_MASKED:
    case SHADER_OPCODE_URB_WRITE_SIMD8_MASKED_PER_SLOT:
    case FS_OPCODE_FB_WRITE:
+   case FS_OPCODE_FB_WRITE_LOGICAL:
    case SHADER_OPCODE_BARRIER:
    case TCS_OPCODE_URB_WRITE:
    case TCS_OPCODE_RELEASE_INPUT:
@@ -1170,7 +1156,7 @@ brw_assign_common_binding_table_offsets(gl_shader_stage stage,
                                         struct brw_stage_prog_data *stage_prog_data,
                                         uint32_t next_binding_table_offset)
 {
-   const struct gl_shader *shader = NULL;
+   const struct gl_linked_shader *shader = NULL;
    int num_textures = _mesa_fls(prog->SamplersUsed);
 
    if (shader_prog)
@@ -1228,6 +1214,15 @@ brw_assign_common_binding_table_offsets(gl_shader_stage stage,
    /* This may or may not be used depending on how the compile goes. */
    stage_prog_data->binding_table.pull_constants_start = next_binding_table_offset;
    next_binding_table_offset++;
+
+   /* Plane 0 is just the regular texture section */
+   stage_prog_data->binding_table.plane_start[0] = stage_prog_data->binding_table.texture_start;
+
+   stage_prog_data->binding_table.plane_start[1] = next_binding_table_offset;
+   next_binding_table_offset += num_textures;
+
+   stage_prog_data->binding_table.plane_start[2] = next_binding_table_offset;
+   next_binding_table_offset += num_textures;
 
    assert(next_binding_table_offset <= BRW_MAX_SURFACES);
 
@@ -1323,7 +1318,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
                 char **error_str)
 {
    const struct brw_device_info *devinfo = compiler->devinfo;
-   struct gl_shader *shader =
+   struct gl_linked_shader *shader =
       shader_prog->_LinkedShaders[MESA_SHADER_TESS_EVAL];
    const bool is_scalar = compiler->scalar_stage[MESA_SHADER_TESS_EVAL];
 

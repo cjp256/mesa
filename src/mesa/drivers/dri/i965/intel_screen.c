@@ -65,6 +65,8 @@ DRI_CONF_BEGIN
    DRI_CONF_SECTION_QUALITY
       DRI_CONF_FORCE_S3TC_ENABLE("false")
 
+      DRI_CONF_PRECISE_TRIG("false")
+
       DRI_CONF_OPT_BEGIN(clamp_max_samples, int, -1)
               DRI_CONF_DESC(en, "Clamp the value of GL_MAX_SAMPLES to the "
                             "given integer. If negative, then do not clamp.")
@@ -85,6 +87,10 @@ DRI_CONF_BEGIN
       DRI_CONF_OPT_BEGIN_B(shader_precompile, "true")
 	 DRI_CONF_DESC(en, "Perform code generation at shader link time.")
       DRI_CONF_OPT_END
+   DRI_CONF_SECTION_END
+
+   DRI_CONF_SECTION_MISCELLANEOUS
+      DRI_CONF_GLSL_ZERO_INIT("false")
    DRI_CONF_SECTION_END
 DRI_CONF_END
 };
@@ -257,6 +263,31 @@ static struct intel_image_format intel_image_formats[] = {
      { { 0, 0, 0, __DRI_IMAGE_FORMAT_R8, 1 },
        { 1, 0, 0, __DRI_IMAGE_FORMAT_R8, 1 },
        { 2, 0, 0, __DRI_IMAGE_FORMAT_R8, 1 } } },
+
+   { __DRI_IMAGE_FOURCC_YVU410, __DRI_IMAGE_COMPONENTS_Y_U_V, 3,
+     { { 0, 0, 0, __DRI_IMAGE_FORMAT_R8, 1 },
+       { 2, 2, 2, __DRI_IMAGE_FORMAT_R8, 1 },
+       { 1, 2, 2, __DRI_IMAGE_FORMAT_R8, 1 } } },
+
+   { __DRI_IMAGE_FOURCC_YVU411, __DRI_IMAGE_COMPONENTS_Y_U_V, 3,
+     { { 0, 0, 0, __DRI_IMAGE_FORMAT_R8, 1 },
+       { 2, 2, 0, __DRI_IMAGE_FORMAT_R8, 1 },
+       { 1, 2, 0, __DRI_IMAGE_FORMAT_R8, 1 } } },
+
+   { __DRI_IMAGE_FOURCC_YVU420, __DRI_IMAGE_COMPONENTS_Y_U_V, 3,
+     { { 0, 0, 0, __DRI_IMAGE_FORMAT_R8, 1 },
+       { 2, 1, 1, __DRI_IMAGE_FORMAT_R8, 1 },
+       { 1, 1, 1, __DRI_IMAGE_FORMAT_R8, 1 } } },
+
+   { __DRI_IMAGE_FOURCC_YVU422, __DRI_IMAGE_COMPONENTS_Y_U_V, 3,
+     { { 0, 0, 0, __DRI_IMAGE_FORMAT_R8, 1 },
+       { 2, 1, 0, __DRI_IMAGE_FORMAT_R8, 1 },
+       { 1, 1, 0, __DRI_IMAGE_FORMAT_R8, 1 } } },
+
+   { __DRI_IMAGE_FOURCC_YVU444, __DRI_IMAGE_COMPONENTS_Y_U_V, 3,
+     { { 0, 0, 0, __DRI_IMAGE_FORMAT_R8, 1 },
+       { 2, 0, 0, __DRI_IMAGE_FORMAT_R8, 1 },
+       { 1, 0, 0, __DRI_IMAGE_FORMAT_R8, 1 } } },
 
    { __DRI_IMAGE_FOURCC_NV12, __DRI_IMAGE_COMPONENTS_Y_UV, 2,
      { { 0, 0, 0, __DRI_IMAGE_FORMAT_R8, 1 },
@@ -676,8 +707,13 @@ intel_create_image_from_fds(__DRIscreen *screen,
    __DRIimage *image;
    int i, index;
 
-   if (fds == NULL || num_fds != 1)
+   if (fds == NULL || num_fds < 1)
       return NULL;
+
+   /* We only support all planes from the same bo */
+   for (i = 0; i < num_fds; i++)
+      if (fds[0] != fds[i])
+         return NULL;
 
    f = intel_image_format_lookup(fourcc);
    if (f == NULL)
@@ -691,22 +727,28 @@ intel_create_image_from_fds(__DRIscreen *screen,
    if (image == NULL)
       return NULL;
 
-   image->bo = drm_intel_bo_gem_create_from_prime(intelScreen->bufmgr,
-                                                  fds[0],
-                                                  height * strides[0]);
-   if (image->bo == NULL) {
-      free(image);
-      return NULL;
-   }
    image->width = width;
    image->height = height;
    image->pitch = strides[0];
 
    image->planar_format = f;
+   int size = 0;
    for (i = 0; i < f->nplanes; i++) {
       index = f->planes[i].buffer_index;
       image->offsets[index] = offsets[index];
       image->strides[index] = strides[index];
+
+      const int plane_height = height >> f->planes[i].height_shift;
+      const int end = offsets[index] + plane_height * strides[index];
+      if (size < end)
+         size = end;
+   }
+
+   image->bo = drm_intel_bo_gem_create_from_prime(intelScreen->bufmgr,
+                                                  fds[0], size);
+   if (image->bo == NULL) {
+      free(image);
+      return NULL;
    }
 
    if (f->nplanes == 1) {
@@ -732,8 +774,7 @@ intel_create_image_from_dma_bufs(__DRIscreen *screen,
    __DRIimage *image;
    struct intel_image_format *f = intel_image_format_lookup(fourcc);
 
-   /* For now only packed formats that have native sampling are supported. */
-   if (!f || f->nplanes != 1) {
+   if (!f) {
       *error = __DRI_IMAGE_ERROR_BAD_MATCH;
       return NULL;
    }
@@ -933,27 +974,29 @@ static const __DRIextension *intelRobustScreenExtensions[] = {
 };
 
 static int
-intel_get_param(__DRIscreen *psp, int param, int *value)
+intel_get_param(struct intel_screen *screen, int param, int *value)
 {
-   int ret;
+   int ret = 0;
    struct drm_i915_getparam gp;
 
    memset(&gp, 0, sizeof(gp));
    gp.param = param;
    gp.value = value;
 
-   ret = drmCommandWriteRead(psp->fd, DRM_I915_GETPARAM, &gp, sizeof(gp));
-   if (ret < 0 && ret != -EINVAL)
-	 _mesa_warning(NULL, "drm_i915_getparam: %d", ret);
+   if (drmIoctl(screen->driScrnPriv->fd, DRM_IOCTL_I915_GETPARAM, &gp) == -1) {
+      ret = -errno;
+      if (ret != -EINVAL)
+         _mesa_warning(NULL, "drm_i915_getparam: %d", ret);
+   }
 
    return ret;
 }
 
 static bool
-intel_get_boolean(__DRIscreen *psp, int param)
+intel_get_boolean(struct intel_screen *screen, int param)
 {
    int value = 0;
-   return (intel_get_param(psp, param, &value) == 0) && value;
+   return (intel_get_param(screen, param, &value) == 0) && value;
 }
 
 static void
@@ -1088,12 +1131,12 @@ intel_detect_sseu(struct intel_screen *intelScreen)
    intelScreen->subslice_total = -1;
    intelScreen->eu_total = -1;
 
-   ret = intel_get_param(intelScreen->driScrnPriv, I915_PARAM_SUBSLICE_TOTAL,
+   ret = intel_get_param(intelScreen, I915_PARAM_SUBSLICE_TOTAL,
                          &intelScreen->subslice_total);
    if (ret < 0 && ret != -EINVAL)
       goto err_out;
 
-   ret = intel_get_param(intelScreen->driScrnPriv,
+   ret = intel_get_param(intelScreen,
                          I915_PARAM_EU_TOTAL, &intelScreen->eu_total);
    if (ret < 0 && ret != -EINVAL)
       goto err_out;
@@ -1111,7 +1154,7 @@ intel_detect_sseu(struct intel_screen *intelScreen)
 err_out:
    intelScreen->subslice_total = -1;
    intelScreen->eu_total = -1;
-   _mesa_warning(NULL, "Failed to query GPU properties (%s).\n", strerror(ret));
+   _mesa_warning(NULL, "Failed to query GPU properties (%s).\n", strerror(-ret));
 }
 
 static bool
@@ -1130,7 +1173,7 @@ intel_init_bufmgr(struct intel_screen *intelScreen)
 
    drm_intel_bufmgr_gem_enable_fenced_relocs(intelScreen->bufmgr);
 
-   if (!intel_get_boolean(spriv, I915_PARAM_HAS_RELAXED_DELTA)) {
+   if (!intel_get_boolean(intelScreen, I915_PARAM_HAS_RELAXED_DELTA)) {
       fprintf(stderr, "[%s: %u] Kernel 2.6.39 required.\n", __func__, __LINE__);
       return false;
    }
@@ -1376,7 +1419,7 @@ set_max_gl_versions(struct intel_screen *screen)
    switch (screen->devinfo->gen) {
    case 9:
    case 8:
-      psp->max_gl_core_version = 40;
+      psp->max_gl_core_version = 44;
       psp->max_gl_compat_version = 30;
       psp->max_gl_es1_version = 11;
       psp->max_gl_es2_version = 31;
@@ -1431,6 +1474,46 @@ brw_get_revision(int fd)
 #ifndef I915_PARAM_HAS_RESOURCE_STREAMER
 #define I915_PARAM_HAS_RESOURCE_STREAMER 36
 #endif
+
+static void
+shader_debug_log_mesa(void *data, const char *fmt, ...)
+{
+   struct brw_context *brw = (struct brw_context *)data;
+   va_list args;
+
+   va_start(args, fmt);
+   GLuint msg_id = 0;
+   _mesa_gl_vdebug(&brw->ctx, &msg_id,
+                   MESA_DEBUG_SOURCE_SHADER_COMPILER,
+                   MESA_DEBUG_TYPE_OTHER,
+                   MESA_DEBUG_SEVERITY_NOTIFICATION, fmt, args);
+   va_end(args);
+}
+
+static void
+shader_perf_log_mesa(void *data, const char *fmt, ...)
+{
+   struct brw_context *brw = (struct brw_context *)data;
+
+   va_list args;
+   va_start(args, fmt);
+
+   if (unlikely(INTEL_DEBUG & DEBUG_PERF)) {
+      va_list args_copy;
+      va_copy(args_copy, args);
+      vfprintf(stderr, fmt, args_copy);
+      va_end(args_copy);
+   }
+
+   if (brw->perf_debug) {
+      GLuint msg_id = 0;
+      _mesa_gl_vdebug(&brw->ctx, &msg_id,
+                      MESA_DEBUG_SOURCE_SHADER_COMPILER,
+                      MESA_DEBUG_TYPE_PERFORMANCE,
+                      MESA_DEBUG_SEVERITY_MEDIUM, fmt, args);
+   }
+   va_end(args);
+}
 
 /**
  * This is the driver specific part of the createNewScreen entry point.
@@ -1490,8 +1573,11 @@ __DRIconfig **intelInitScreen2(__DRIscreen *psp)
    intelScreen->hw_has_timestamp = intel_detect_timestamp(intelScreen);
 
    /* GENs prior to 8 do not support EU/Subslice info */
-   if (intelScreen->devinfo->gen >= 8)
+   if (intelScreen->devinfo->gen >= 8) {
       intel_detect_sseu(intelScreen);
+   } else if (intelScreen->devinfo->gen == 7) {
+      intelScreen->subslice_total = 1 << (intelScreen->devinfo->gt - 1);
+   }
 
    const char *force_msaa = getenv("INTEL_FORCE_MSAA");
    if (force_msaa) {
@@ -1524,12 +1610,10 @@ __DRIconfig **intelInitScreen2(__DRIscreen *psp)
          (ret != -1 || errno != EINVAL);
    }
 
-   struct drm_i915_getparam getparam;
-   getparam.param = I915_PARAM_CMD_PARSER_VERSION;
-   getparam.value = &intelScreen->cmd_parser_version;
-   const int ret = drmIoctl(psp->fd, DRM_IOCTL_I915_GETPARAM, &getparam);
-   if (ret == -1)
+   if (intel_get_param(intelScreen, I915_PARAM_CMD_PARSER_VERSION,
+                       &intelScreen->cmd_parser_version) < 0) {
       intelScreen->cmd_parser_version = 0;
+   }
 
    /* Haswell requires command parser version 6 in order to write to the
     * MI_MATH GPR registers, and version 7 in order to use
@@ -1544,15 +1628,13 @@ __DRIconfig **intelInitScreen2(__DRIscreen *psp)
 
    intelScreen->compiler = brw_compiler_create(intelScreen,
                                                intelScreen->devinfo);
+   intelScreen->compiler->shader_debug_log = shader_debug_log_mesa;
+   intelScreen->compiler->shader_perf_log = shader_perf_log_mesa;
    intelScreen->program_id = 1;
 
    if (intelScreen->devinfo->has_resource_streamer) {
-      int val = -1;
-      getparam.param = I915_PARAM_HAS_RESOURCE_STREAMER;
-      getparam.value = &val;
-
-      drmIoctl(psp->fd, DRM_IOCTL_I915_GETPARAM, &getparam);
-      intelScreen->has_resource_streamer = val > 0;
+      intelScreen->has_resource_streamer =
+        intel_get_boolean(intelScreen, I915_PARAM_HAS_RESOURCE_STREAMER);
    }
 
    return (const __DRIconfig**) intel_screen_make_configs(psp);

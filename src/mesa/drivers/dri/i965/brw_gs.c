@@ -98,7 +98,6 @@ brw_codegen_gs_prog(struct brw_context *brw,
                     struct brw_gs_prog_key *key)
 {
    struct brw_compiler *compiler = brw->intelScreen->compiler;
-   struct gl_shader *shader = prog->_LinkedShaders[MESA_SHADER_GEOMETRY];
    struct brw_stage_state *stage_state = &brw->gs.base;
    struct brw_gs_prog_data prog_data;
    bool start_busy = false;
@@ -117,11 +116,9 @@ brw_codegen_gs_prog(struct brw_context *brw,
     * padding around uniform values below vec4 size, so the worst case is that
     * every uniform is a float which gets padded to the size of a vec4.
     */
-   struct gl_shader *gs = prog->_LinkedShaders[MESA_SHADER_GEOMETRY];
+   struct gl_linked_shader *gs = prog->_LinkedShaders[MESA_SHADER_GEOMETRY];
    struct brw_shader *bgs = (struct brw_shader *) gs;
-   int param_count = gp->program.Base.nir->num_uniforms;
-   if (!compiler->scalar_stage[MESA_SHADER_GEOMETRY])
-      param_count *= 4;
+   int param_count = gp->program.Base.nir->num_uniforms / 4;
 
    prog_data.base.base.param =
       rzalloc_array(NULL, const gl_constant_value *, param_count);
@@ -144,7 +141,7 @@ brw_codegen_gs_prog(struct brw_context *brw,
 
    brw_compute_vue_map(brw->intelScreen->devinfo,
                        &prog_data.base.vue_map, outputs_written,
-                       prog ? prog->SeparateShader : false);
+                       prog->SeparateShader);
 
    if (unlikely(INTEL_DEBUG & DEBUG_GS))
       brw_dump_ir("geometry", prog, gs, NULL);
@@ -163,9 +160,15 @@ brw_codegen_gs_prog(struct brw_context *brw,
    char *error_str;
    const unsigned *program =
       brw_compile_gs(brw->intelScreen->compiler, brw, mem_ctx, key,
-                     &prog_data, shader->Program->nir, prog,
+                     &prog_data, gs->Program->nir, prog,
                      st_index, &program_size, &error_str);
    if (program == NULL) {
+      if (prog) {
+         ralloc_strcat(&prog->InfoLog, error_str);
+      }
+
+      _mesa_problem(NULL, "Failed to compile geometry shader: %s\n", error_str);
+
       ralloc_free(mem_ctx);
       return false;
    }
@@ -182,11 +185,9 @@ brw_codegen_gs_prog(struct brw_context *brw,
    }
 
    /* Scratch space is used for register spilling */
-   if (prog_data.base.base.total_scratch) {
-      brw_get_scratch_bo(brw, &stage_state->scratch_bo,
-			 prog_data.base.base.total_scratch *
-                         brw->max_gs_threads);
-   }
+   brw_alloc_stage_scratch(brw, stage_state,
+                           prog_data.base.base.total_scratch,
+                           brw->max_gs_threads);
 
    brw_upload_cache(&brw->cache, BRW_CACHE_GS_PROG,
                     key, sizeof(*key),
@@ -212,7 +213,6 @@ brw_gs_populate_key(struct brw_context *brw,
                     struct brw_gs_prog_key *key)
 {
    struct gl_context *ctx = &brw->ctx;
-   struct brw_stage_state *stage_state = &brw->gs.base;
    struct brw_geometry_program *gp =
       (struct brw_geometry_program *) brw->geometry_program;
    struct gl_program *prog = &gp->program.Base;
@@ -222,8 +222,7 @@ brw_gs_populate_key(struct brw_context *brw,
    key->program_string_id = gp->id;
 
    /* _NEW_TEXTURE */
-   brw_populate_sampler_prog_key_data(ctx, prog, stage_state->sampler_count,
-                                      &key->tex);
+   brw_populate_sampler_prog_key_data(ctx, prog, &key->tex);
 }
 
 void

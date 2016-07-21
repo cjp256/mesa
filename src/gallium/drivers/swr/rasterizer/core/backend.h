@@ -208,13 +208,13 @@ INLINE void generateInputCoverage(const uint64_t *const coverageMask, uint32_t (
 
     mask[0] = _mm256_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0xC, 0x8, 0x4, 0x0,
                               -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0xC, 0x8, 0x4, 0x0);
-    // pull out the the 8bit 4x2 coverage for samples 0-7 into the lower 32 bits of each 128bit lane
+    // pull out the 8bit 4x2 coverage for samples 0-7 into the lower 32 bits of each 128bit lane
     __m256i packedCoverage0 = _simd_shuffle_epi8(sampleCoverage[0], mask[0]);
 
     __m256i packedCoverage1;
     if(T::MultisampleT::numSamples > 8)
     {
-        // pull out the the 8bit 4x2 coverage for samples 8-15 into the lower 32 bits of each 128bit lane
+        // pull out the 8bit 4x2 coverage for samples 8-15 into the lower 32 bits of each 128bit lane
         packedCoverage1 = _simd_shuffle_epi8(sampleCoverage[1], mask[0]);
     }
 
@@ -368,22 +368,9 @@ INLINE void CalcCentroidPos(SWR_PS_CONTEXT &psContext, const uint64_t *const cov
     psContext.vY.centroid = _simd_blendv_ps(psContext.vY.centroid, vYSample, _simd_castsi_ps(vCase3a));
 }
 
-template<typename T>
 INLINE void CalcCentroidBarycentrics(const BarycentricCoeffs& coeffs, SWR_PS_CONTEXT &psContext,
-                                     const uint64_t *const coverageMask, const uint32_t sampleMask,
                                      const simdscalar vXSamplePosUL, const simdscalar vYSamplePosUL)
 {
-    if(T::bIsStandardPattern)
-    {
-        ///@ todo: don't need to generate input coverage 2x if input coverage and centroid
-        CalcCentroidPos<T>(psContext, coverageMask, sampleMask, vXSamplePosUL, vYSamplePosUL);
-    }
-    else
-    {
-        static const __m256 pixelCenter = _simd_set1_ps(0.5f);
-        psContext.vX.centroid = _simd_add_ps(vXSamplePosUL, pixelCenter);
-        psContext.vY.centroid = _simd_add_ps(vYSamplePosUL, pixelCenter);
-    }
     // evaluate I,J
     psContext.vI.centroid = vplaneps(coeffs.vIa, coeffs.vIb, coeffs.vIc, psContext.vX.centroid, psContext.vY.centroid);
     psContext.vJ.centroid = vplaneps(coeffs.vJa, coeffs.vJb, coeffs.vJc, psContext.vX.centroid, psContext.vY.centroid);

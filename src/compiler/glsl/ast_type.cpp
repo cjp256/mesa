@@ -175,9 +175,12 @@ ast_type_qualifier::merge_qualifier(YYLTYPE *loc,
    /* Geometry shaders can have several layout qualifiers
     * assigning different stream values.
     */
-   if (state->stage == MESA_SHADER_GEOMETRY)
+   if (state->stage == MESA_SHADER_GEOMETRY) {
       allowed_duplicates_mask.flags.i |=
          stream_layout_mask.flags.i;
+      input_layout_mask.flags.i |=
+         stream_layout_mask.flags.i;
+   }
 
    if (is_single_layout_merge && !state->has_enhanced_layouts() &&
        (this->flags.i & q.flags.i & ~allowed_duplicates_mask.flags.i) != 0) {
@@ -675,7 +678,8 @@ bool
 ast_layout_expression::process_qualifier_constant(struct _mesa_glsl_parse_state *state,
                                                   const char *qual_indentifier,
                                                   unsigned *value,
-                                                  bool can_be_zero)
+                                                  bool can_be_zero,
+                                                  bool must_match)
 {
    int min_value = 0;
    bool first_pass = true;
@@ -708,12 +712,19 @@ ast_layout_expression::process_qualifier_constant(struct _mesa_glsl_parse_state 
          return false;
       }
 
-      if (!first_pass && *value != const_int->value.u[0]) {
-         YYLTYPE loc = const_expression->get_location();
-         _mesa_glsl_error(&loc, state, "%s layout qualifier does not "
-		          "match previous declaration (%d vs %d)",
-                          qual_indentifier, *value, const_int->value.i[0]);
-         return false;
+      /* From section 4.4 "Layout Qualifiers" of the GLSL 4.50 spec:
+       * "When the same layout-qualifier-name occurs multiple times,
+       *  in a single declaration, the last occurrence overrides the
+       *  former occurrence(s)."
+       */
+      if (!first_pass) {
+         if ((must_match || !state->has_420pack()) && *value != const_int->value.u[0]) {
+            YYLTYPE loc = const_expression->get_location();
+            _mesa_glsl_error(&loc, state, "%s layout qualifier does not "
+                             "match previous declaration (%d vs %d)",
+                             qual_indentifier, *value, const_int->value.i[0]);
+            return false;
+         }
       } else {
          first_pass = false;
          *value = const_int->value.u[0];

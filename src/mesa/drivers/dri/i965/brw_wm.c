@@ -35,6 +35,7 @@
 #include "program/prog_parameter.h"
 #include "program/program.h"
 #include "intel_mipmap_tree.h"
+#include "intel_image.h"
 #include "brw_nir.h"
 #include "brw_program.h"
 
@@ -96,7 +97,7 @@ brw_codegen_wm_prog(struct brw_context *brw,
     * prog_data associated with the compiled program, and which will be freed
     * by the state cache.
     */
-   int param_count = fp->program.Base.nir->num_uniforms;
+   int param_count = fp->program.Base.nir->num_uniforms / 4;
    if (fs)
       prog_data.base.nr_image_params = fs->base.NumImages;
    /* The backend also sometimes adds params for texture size. */
@@ -137,7 +138,8 @@ brw_codegen_wm_prog(struct brw_context *brw,
    program = brw_compile_fs(brw->intelScreen->compiler, brw, mem_ctx,
                             key, &prog_data, fp->program.Base.nir,
                             &fp->program.Base, st_index8, st_index16,
-                            brw->use_rep_send, &program_size, &error_str);
+                            true, brw->use_rep_send,
+                            &program_size, &error_str);
    if (program == NULL) {
       if (prog) {
          prog->LinkStatus = false;
@@ -161,10 +163,9 @@ brw_codegen_wm_prog(struct brw_context *brw,
       }
    }
 
-   if (prog_data.base.total_scratch) {
-      brw_get_scratch_bo(brw, &brw->wm.base.scratch_bo,
-			 prog_data.base.total_scratch * brw->max_wm_threads);
-   }
+   brw_alloc_stage_scratch(brw, &brw->wm.base,
+                           prog_data.base.total_scratch,
+                           brw->max_wm_threads);
 
    if (unlikely(INTEL_DEBUG & DEBUG_WM))
       fprintf(stderr, "\n");
@@ -205,6 +206,16 @@ brw_debug_recompile_sampler_key(struct brw_context *brw,
    found |= key_debug(brw, "16x msaa",
                       old_key->msaa_16,
                       key->msaa_16);
+
+   found |= key_debug(brw, "y_uv image bound",
+                      old_key->y_uv_image_mask,
+                      key->y_uv_image_mask);
+   found |= key_debug(brw, "y_u_v image bound",
+                      old_key->y_u_v_image_mask,
+                      key->y_u_v_image_mask);
+   found |= key_debug(brw, "yx_xuxv image bound",
+                      old_key->yx_xuxv_image_mask,
+                      key->yx_xuxv_image_mask);
 
    for (unsigned int i = 0; i < MAX_SAMPLERS; i++) {
       found |= key_debug(brw, "textureGather workarounds",
@@ -256,16 +267,12 @@ brw_wm_debug_recompile(struct brw_context *brw,
                       old_key->nr_color_regions, key->nr_color_regions);
    found |= key_debug(brw, "MRT alpha test or alpha-to-coverage",
                       old_key->replicate_alpha, key->replicate_alpha);
-   found |= key_debug(brw, "rendering to FBO",
-                      old_key->render_to_fbo, key->render_to_fbo);
    found |= key_debug(brw, "fragment color clamping",
                       old_key->clamp_fragment_color, key->clamp_fragment_color);
    found |= key_debug(brw, "multisampled FBO",
                       old_key->multisample_fbo, key->multisample_fbo);
    found |= key_debug(brw, "line smoothing",
                       old_key->line_aa, key->line_aa);
-   found |= key_debug(brw, "renderbuffer height",
-                      old_key->drawable_height, key->drawable_height);
    found |= key_debug(brw, "input slots valid",
                       old_key->input_slots_valid, key->input_slots_valid);
    found |= key_debug(brw, "mrt alpha test function",
@@ -299,16 +306,15 @@ gen6_gather_workaround(GLenum internalformat)
 void
 brw_populate_sampler_prog_key_data(struct gl_context *ctx,
 				   const struct gl_program *prog,
-                                   unsigned sampler_count,
 				   struct brw_sampler_prog_key_data *key)
 {
    struct brw_context *brw = brw_context(ctx);
+   GLbitfield mask = prog->SamplersUsed;
 
-   for (int s = 0; s < sampler_count; s++) {
+   while (mask) {
+      const int s = u_bit_scan(&mask);
+
       key->swizzles[s] = SWIZZLE_NOOP;
-
-      if (!(prog->SamplersUsed & (1 << s)))
-	 continue;
 
       int unit_id = prog->SamplerUnits[s];
       const struct gl_texture_unit *unit = &ctx->Texture.Unit[unit_id];
@@ -374,6 +380,23 @@ brw_populate_sampler_prog_key_data(struct gl_context *ctx,
                key->msaa_16 |= 1 << s;
             }
          }
+
+         if (t->Target == GL_TEXTURE_EXTERNAL_OES && intel_tex->planar_format) {
+            switch (intel_tex->planar_format->components) {
+            case __DRI_IMAGE_COMPONENTS_Y_UV:
+               key->y_uv_image_mask |= 1 << s;
+               break;
+            case __DRI_IMAGE_COMPONENTS_Y_U_V:
+               key->y_u_v_image_mask |= 1 << s;
+               break;
+            case __DRI_IMAGE_COMPONENTS_Y_XUXV:
+               key->yx_xuxv_image_mask |= 1 << s;
+               break;
+            default:
+               break;
+            }
+         }
+
       }
    }
 }
@@ -409,7 +432,6 @@ brw_wm_populate_key(struct brw_context *brw, struct brw_wm_prog_key *key)
    const struct gl_program *prog = (struct gl_program *) brw->fragment_program;
    GLuint lookup = 0;
    GLuint line_aa;
-   bool program_uses_dfdy = fp->program.UsesDFdy;
 
    memset(key, 0, sizeof(*key));
 
@@ -483,38 +505,7 @@ brw_wm_populate_key(struct brw_context *brw, struct brw_wm_prog_key *key)
    key->clamp_fragment_color = ctx->Color._ClampFragmentColor;
 
    /* _NEW_TEXTURE */
-   brw_populate_sampler_prog_key_data(ctx, prog, brw->wm.base.sampler_count,
-                                      &key->tex);
-
-   /* _NEW_BUFFERS */
-   /*
-    * Include the draw buffer origin and height so that we can calculate
-    * fragment position values relative to the bottom left of the drawable,
-    * from the incoming screen origin relative position we get as part of our
-    * payload.
-    *
-    * This is only needed for the WM_WPOSXY opcode when the fragment program
-    * uses the gl_FragCoord input.
-    *
-    * We could avoid recompiling by including this as a constant referenced by
-    * our program, but if we were to do that it would also be nice to handle
-    * getting that constant updated at batchbuffer submit time (when we
-    * hold the lock and know where the buffer really is) rather than at emit
-    * time when we don't hold the lock and are just guessing.  We could also
-    * just avoid using this as key data if the program doesn't use
-    * fragment.position.
-    *
-    * For DRI2 the origin_x/y will always be (0,0) but we still need the
-    * drawable height in order to invert the Y axis.
-    */
-   if (fp->program.Base.InputsRead & VARYING_BIT_POS) {
-      key->drawable_height = _mesa_geometric_height(ctx->DrawBuffer);
-   }
-
-   if ((fp->program.Base.InputsRead & VARYING_BIT_POS) ||
-       program_uses_dfdy || prog->nir->info.uses_interp_var_at_offset) {
-      key->render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer);
-   }
+   brw_populate_sampler_prog_key_data(ctx, prog, &key->tex);
 
    /* _NEW_BUFFERS */
    key->nr_color_regions = ctx->DrawBuffer->_NumColorDrawBuffers;
@@ -594,7 +585,6 @@ brw_fs_precompile(struct gl_context *ctx,
 
    struct gl_fragment_program *fp = (struct gl_fragment_program *) prog;
    struct brw_fragment_program *bfp = brw_fragment_program(fp);
-   bool program_uses_dfdy = fp->UsesDFdy;
 
    memset(&key, 0, sizeof(key));
 
@@ -616,18 +606,9 @@ brw_fs_precompile(struct gl_context *ctx,
 
    brw_setup_tex_for_precompile(brw, &key.tex, &fp->Base);
 
-   if (fp->Base.InputsRead & VARYING_BIT_POS) {
-      key.drawable_height = ctx->DrawBuffer->Height;
-   }
-
    key.nr_color_regions = _mesa_bitcount_64(fp->Base.OutputsWritten &
          ~(BITFIELD64_BIT(FRAG_RESULT_DEPTH) |
          BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK)));
-
-   if ((fp->Base.InputsRead & VARYING_BIT_POS) || program_uses_dfdy) {
-      key.render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer) ||
-                          key.nr_color_regions > 1;
-   }
 
    key.program_string_id = bfp->id;
 

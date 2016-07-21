@@ -162,8 +162,16 @@ droid_window_dequeue_buffer(struct dri2_egl_surface *dri2_surf)
 }
 
 static EGLBoolean
-droid_window_enqueue_buffer(struct dri2_egl_surface *dri2_surf)
+droid_window_enqueue_buffer(_EGLDisplay *disp, struct dri2_egl_surface *dri2_surf)
 {
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+
+   /* To avoid blocking other EGL calls, release the display mutex before
+    * we enter droid_window_enqueue_buffer() and re-acquire the mutex upon
+    * return.
+    */
+   mtx_unlock(&disp->Mutex);
+
 #if ANDROID_VERSION >= 0x0402
    /* Queue the buffer without a sync fence. This informs the ANativeWindow
     * that it may access the buffer immediately.
@@ -187,14 +195,21 @@ droid_window_enqueue_buffer(struct dri2_egl_surface *dri2_surf)
    dri2_surf->buffer->common.decRef(&dri2_surf->buffer->common);
    dri2_surf->buffer = NULL;
 
+   mtx_lock(&disp->Mutex);
+
+   if (dri2_surf->dri_image) {
+      dri2_dpy->image->destroyImage(dri2_surf->dri_image);
+      dri2_surf->dri_image = NULL;
+   }
+
    return EGL_TRUE;
 }
 
 static void
-droid_window_cancel_buffer(struct dri2_egl_surface *dri2_surf)
+droid_window_cancel_buffer(_EGLDisplay *disp, struct dri2_egl_surface *dri2_surf)
 {
    /* no cancel buffer? */
-   droid_window_enqueue_buffer(dri2_surf);
+   droid_window_enqueue_buffer(disp, dri2_surf);
 }
 
 static __DRIbuffer *
@@ -275,6 +290,8 @@ droid_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
 
    config = dri2_get_dri_config(dri2_conf, EGL_WINDOW_BIT,
                                 dri2_surf->base.GLColorspace);
+   if (!config)
+      goto cleanup_surface;
 
    dri2_surf->dri_drawable =
       (*dri2_dpy->dri2->createNewDrawable)(dri2_dpy->dri_screen, config,
@@ -327,7 +344,7 @@ droid_destroy_surface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf)
 
    if (dri2_surf->base.Type == EGL_WINDOW_BIT) {
       if (dri2_surf->buffer)
-         droid_window_cancel_buffer(dri2_surf);
+         droid_window_cancel_buffer(disp, dri2_surf);
 
       dri2_surf->window->common.decRef(&dri2_surf->window->common);
    }
@@ -346,8 +363,10 @@ update_buffers(struct dri2_egl_surface *dri2_surf)
       return 0;
 
    /* try to dequeue the next back buffer */
-   if (!dri2_surf->buffer && !droid_window_dequeue_buffer(dri2_surf))
+   if (!dri2_surf->buffer && !droid_window_dequeue_buffer(dri2_surf)) {
+      _eglLog(_EGL_WARNING, "Could not dequeue buffer from native window");
       return -1;
+   }
 
    /* free outdated buffers and update the surface size */
    if (dri2_surf->base.Width != dri2_surf->buffer->width ||
@@ -368,20 +387,28 @@ get_back_bo(struct dri2_egl_surface *dri2_surf)
    int fourcc, pitch;
    int offset = 0, fd;
 
+   if (dri2_surf->dri_image)
+	   return 0;
+
    if (!dri2_surf->buffer)
       return -1;
 
    fd = get_native_buffer_fd(dri2_surf->buffer);
-   if (fd < 0)
+   if (fd < 0) {
+      _eglLog(_EGL_WARNING, "Could not get native buffer FD");
       return -1;
+   }
 
    fourcc = get_fourcc(get_format(dri2_surf->buffer->format));
 
    pitch = dri2_surf->buffer->stride *
       get_format_bpp(dri2_surf->buffer->format);
 
-   if (fourcc == -1 || pitch == 0)
+   if (fourcc == -1 || pitch == 0) {
+      _eglLog(_EGL_WARNING, "Invalid buffer fourcc(%x) or pitch(%d)",
+              fourcc, pitch);
       return -1;
+   }
 
    dri2_surf->dri_image =
       dri2_dpy->image->createImageFromFds(dri2_dpy->dri_screen,
@@ -426,24 +453,16 @@ droid_image_get_buffers(__DRIdrawable *driDrawable,
 static EGLBoolean
 droid_swap_buffers(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *draw)
 {
-   struct dri2_egl_driver *dri2_drv = dri2_egl_driver(drv);
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(draw);
-   _EGLContext *ctx;
 
    if (dri2_surf->base.Type != EGL_WINDOW_BIT)
       return EGL_TRUE;
 
-   if (dri2_drv->glFlush) {
-      ctx = _eglGetCurrentContext();
-      if (ctx && ctx->DrawSurface == &dri2_surf->base)
-         dri2_drv->glFlush();
-   }
-
    dri2_flush_drawable_for_swapbuffers(disp, draw);
 
    if (dri2_surf->buffer)
-      droid_window_enqueue_buffer(dri2_surf);
+      droid_window_enqueue_buffer(disp, dri2_surf);
 
    (*dri2_dpy->flush->invalidate)(dri2_surf->dri_drawable);
 
@@ -451,7 +470,7 @@ droid_swap_buffers(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *draw)
 }
 
 static _EGLImage *
-dri2_create_image_android_native_buffer(_EGLDriver *drv, _EGLDisplay *disp,
+dri2_create_image_android_native_buffer(_EGLDisplay *disp,
                                         _EGLContext *ctx,
                                         struct ANativeWindowBuffer *buf)
 {
@@ -496,8 +515,7 @@ dri2_create_image_android_native_buffer(_EGLDriver *drv, _EGLDisplay *disp,
       if (fourcc == -1 || pitch == 0)
          return NULL;
 
-      return dri2_create_image_khr(drv, disp, ctx, EGL_LINUX_DMA_BUF_EXT,
-         NULL, attr_list);
+      return dri2_create_image_dma_buf(disp, ctx, NULL, attr_list);
    }
 
    name = get_native_buffer_name(buf);
@@ -545,7 +563,7 @@ droid_create_image_khr(_EGLDriver *drv, _EGLDisplay *disp,
 {
    switch (target) {
    case EGL_NATIVE_BUFFER_ANDROID:
-      return dri2_create_image_android_native_buffer(drv, disp, ctx,
+      return dri2_create_image_android_native_buffer(disp, ctx,
             (struct ANativeWindowBuffer *) buffer);
    default:
       return dri2_create_image_khr(drv, disp, ctx, target, buffer, attr_list);
@@ -823,10 +841,6 @@ dri2_initialize_android(_EGLDriver *drv, _EGLDisplay *dpy)
 
    dri2_dpy->is_render_node = drmGetNodeTypeFromFd(dri2_dpy->fd) == DRM_NODE_RENDER;
 
-   dri2_dpy->extensions[0] = &droid_image_loader_extension.base;
-   dri2_dpy->extensions[1] = &use_invalidate.base;
-   dri2_dpy->extensions[2] = &image_lookup_extension.base;
-
    /* render nodes cannot use Gem names, and thus do not support
     * the __DRI_DRI2_LOADER extension */
    if (!dri2_dpy->is_render_node) {
@@ -836,10 +850,13 @@ dri2_initialize_android(_EGLDriver *drv, _EGLDisplay *dpy)
       dri2_dpy->dri2_loader_extension.flushFrontBuffer = droid_flush_front_buffer;
       dri2_dpy->dri2_loader_extension.getBuffersWithFormat =
         droid_get_buffers_with_format;
-      dri2_dpy->extensions[3] = &dri2_dpy->dri2_loader_extension.base;
-      dri2_dpy->extensions[4] = NULL;
-   } else
-      dri2_dpy->extensions[3] = NULL;
+      dri2_dpy->extensions[0] = &dri2_dpy->dri2_loader_extension.base;
+   } else {
+      dri2_dpy->extensions[0] = &droid_image_loader_extension.base;
+   }
+   dri2_dpy->extensions[1] = &use_invalidate.base;
+   dri2_dpy->extensions[2] = &image_lookup_extension.base;
+   dri2_dpy->extensions[3] = NULL;
 
 
    if (!dri2_create_screen(dpy)) {

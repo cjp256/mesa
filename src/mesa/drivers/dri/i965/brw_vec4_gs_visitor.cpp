@@ -52,10 +52,9 @@ vec4_gs_visitor::vec4_gs_visitor(const struct brw_compiler *compiler,
 
 
 dst_reg *
-vec4_gs_visitor::make_reg_for_system_value(int location,
-                                           const glsl_type *type)
+vec4_gs_visitor::make_reg_for_system_value(int location)
 {
-   dst_reg *reg = new(mem_ctx) dst_reg(this, type);
+   dst_reg *reg = new(mem_ctx) dst_reg(this, glsl_type::int_type);
 
    switch (location) {
    case SYSTEM_VALUE_INVOCATION_ID:
@@ -539,6 +538,9 @@ vec4_gs_visitor::gs_end_primitive()
        GEN7_GS_CONTROL_DATA_FORMAT_GSCTL_CUT) {
       return;
    }
+
+   if (c->control_data_header_size_bits == 0)
+      return;
 
    /* Cut bits use one bit per vertex. */
    assert(c->control_data_bits_per_vertex == 1);

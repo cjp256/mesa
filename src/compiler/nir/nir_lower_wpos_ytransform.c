@@ -23,6 +23,7 @@
 
 #include "nir.h"
 #include "nir_builder.h"
+#include "program/prog_instruction.h"
 
 /* Lower gl_FragCoord (and fddy) to account for driver's requested coordinate-
  * origin and pixel-center vs. shader.  If transformation is required, a
@@ -57,6 +58,7 @@ get_transform(lower_wpos_ytransform_state *state)
 
       var->num_state_slots = 1;
       var->state_slots = ralloc_array(var, nir_state_slot, 1);
+      var->state_slots[0].swizzle = SWIZZLE_XYZW;
       memcpy(var->state_slots[0].tokens, state->options->state_tokens,
              sizeof(var->state_slots[0].tokens));
 
@@ -121,19 +123,15 @@ emit_wpos_adjustment(lower_wpos_ytransform_state *state,
     * inversion/identity, or the other way around if we're drawing to an FBO.
     */
    if (invert) {
-      /* MAD wpos_temp.y, wpos_input, wpostrans.xxxx, wpostrans.yyyy
-       */
-      wpos_temp_y = nir_ffma(b,
-                             nir_channel(b, wpos_temp, 1),
-                             nir_channel(b, wpostrans, 0),
-                             nir_channel(b, wpostrans, 1));
+      /* wpos_temp.y = wpos_input * wpostrans.xxxx + wpostrans.yyyy */
+      wpos_temp_y = nir_fadd(b, nir_fmul(b, nir_channel(b, wpos_temp, 1),
+                                            nir_channel(b, wpostrans, 0)),
+                                nir_channel(b, wpostrans, 1));
    } else {
-      /* MAD wpos_temp.y, wpos_input, wpostrans.zzzz, wpostrans.wwww
-       */
-      wpos_temp_y = nir_ffma(b,
-                             nir_channel(b, wpos_temp, 1),
-                             nir_channel(b, wpostrans, 2),
-                             nir_channel(b, wpostrans, 3));
+      /* wpos_temp.y = wpos_input * wpostrans.zzzz + wpostrans.wwww */
+      wpos_temp_y = nir_fadd(b, nir_fmul(b, nir_channel(b, wpos_temp, 1),
+                                            nir_channel(b, wpostrans, 2)),
+                                nir_channel(b, wpostrans, 3));
    }
 
    wpos_temp = nir_vec4(b,
@@ -161,7 +159,7 @@ lower_fragcoord(lower_wpos_ytransform_state *state, nir_intrinsic_instr *intr)
     *
     * The bias of the y-coordinate depends on whether y-inversion takes place
     * (adjY[1]) or not (adjY[0]), which is in turn dependent on whether we are
-    * drawing to an FBO (causes additional inversion), and whether the the pipe
+    * drawing to an FBO (causes additional inversion), and whether the pipe
     * driver origin and the requested origin differ (the latter condition is
     * stored in the 'invert' variable).
     *
@@ -250,9 +248,31 @@ lower_fddy(lower_wpos_ytransform_state *state, nir_alu_instr *fddy)
    nir_instr_rewrite_src(&fddy->instr,
                          &fddy->src[0].src,
                          nir_src_for_ssa(pt));
+
+   for (unsigned i = 0; i < 4; i++)
+      fddy->src[0].swizzle[i] = MIN2(i, pt->num_components - 1);
 }
 
-static bool
+/* Multiply interp_var_at_offset's offset by transform.x to flip it. */
+static void
+lower_interp_var_at_offset(lower_wpos_ytransform_state *state,
+                           nir_intrinsic_instr *interp)
+{
+   nir_builder *b = &state->b;
+   nir_ssa_def *offset;
+   nir_ssa_def *flip_y;
+
+   b->cursor = nir_before_instr(&interp->instr);
+
+   offset = nir_ssa_for_src(b, interp->src[0], 2);
+   flip_y = nir_fmul(b, nir_channel(b, offset, 1),
+                        nir_channel(b, get_transform(state), 0));
+   nir_instr_rewrite_src(&interp->instr, &interp->src[0],
+                         nir_src_for_ssa(nir_vec2(b, nir_channel(b, offset, 0),
+                                                     flip_y)));
+}
+
+static void
 lower_wpos_ytransform_block(lower_wpos_ytransform_state *state, nir_block *block)
 {
    nir_foreach_instr_safe(instr, block) {
@@ -262,20 +282,23 @@ lower_wpos_ytransform_block(lower_wpos_ytransform_state *state, nir_block *block
             nir_deref_var *dvar = intr->variables[0];
             nir_variable *var = dvar->var;
 
-            if (strcmp(var->name, "gl_FragCoord") == 0) {
+            if (var->data.mode == nir_var_shader_in &&
+                var->data.location == VARYING_SLOT_POS) {
                /* gl_FragCoord should not have array/struct deref's: */
                assert(dvar->deref.child == NULL);
                lower_fragcoord(state, intr);
             }
+         } else if (intr->intrinsic == nir_intrinsic_interp_var_at_offset) {
+            lower_interp_var_at_offset(state, intr);
          }
       } else if (instr->type == nir_instr_type_alu) {
          nir_alu_instr *alu = nir_instr_as_alu(instr);
-         if (alu->op == nir_op_fddy)
+         if (alu->op == nir_op_fddy ||
+             alu->op == nir_op_fddy_fine ||
+             alu->op == nir_op_fddy_coarse)
             lower_fddy(state, alu);
       }
    }
-
-   return true;
 }
 
 static void
